@@ -468,7 +468,7 @@ void kernel_main(uintptr_t mb_info) {
     
     // Initialize timer and enable interrupts
     kprintf("Initializing system timer... ");
-    timer_init();
+    timer_init(100); // 100 Hz = 10ms per tick
     sti(); // Enable interrupts
     kprintf("done\n");
     
