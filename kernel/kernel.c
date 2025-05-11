@@ -201,7 +201,7 @@ static int itoa(uint64_t num, int base, char* buf, int width, char pad) {
  * @param fmt Format string (printf-style)
  * @param ... Format arguments
  */
-void kprintf(const char* fmt, ...) {
+int kprintf(const char* fmt, ...) {
     char buf[1024];
     va_list args;
     int i = 0;
