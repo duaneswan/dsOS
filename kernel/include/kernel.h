@@ -210,9 +210,9 @@ static inline void wbinvd(void) {
 #define PRINTF_MODE_SERIAL   1   // Output to serial port
 #define PRINTF_MODE_BOTH     2   // Output to console and serial port
 
-void panic(const char* file, int line, const char* fmt, ...) NORETURN;
+void panic(int type, const char* msg, const char* file, int line) NORETURN;
 void kassertf(bool condition, const char* file, int line, const char* fmt, ...) NORETURN;
-void hos_breach(const char* file, int line, const char* reason, void* regs) NORETURN;
+void hos_breach(const char* reason, uintptr_t addr) NORETURN;
 
 #define kassert(expr) \
     do { \
@@ -254,7 +254,7 @@ char* strdup(const char* s);
 /**
  * @brief Console/print functions (declared in printf.h)
  */
-int kprintf(const char* fmt, ...);
+void kprintf(const char* fmt, ...);
 int vkprintf(const char* fmt, va_list args);
 int snprintf(char* buffer, size_t size, const char* fmt, ...);
 int vsnprintf(char* buffer, size_t size, const char* fmt, va_list args);
@@ -277,7 +277,7 @@ void vga_set_cursor_pos(int x, int y);
  * @brief Serial port functions (declared in serial.h)
  */
 typedef struct serial_port_t serial_port_t;
-serial_port_t* serial_init(uint16_t port, uint32_t baud_rate);
+void serial_init(void);
 void serial_init_all(void);
 bool serial_is_initialized(serial_port_t* port);
 bool serial_write_char(serial_port_t* port, char c);
@@ -291,11 +291,11 @@ bool serial_test(serial_port_t* port);
  */
 void gdt_init(void);
 void idt_init(void);
-void pic_init(uint8_t offset1, uint8_t offset2);
+void pic_init(void);
 void pic_send_eoi(uint8_t irq);
 void pic_mask_irq(uint8_t irq);
 void pic_unmask_irq(uint8_t irq);
-void timer_init(uint32_t frequency);
+void timer_init(void);
 uint64_t timer_get_ticks(void);
 uint64_t timer_get_ms(void);
 void timer_wait_ms(uint32_t ms);
