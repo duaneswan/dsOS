@@ -211,6 +211,20 @@ static void parse_format_flags(const char** format, int* width, char* pad, int* 
 }
 
 /**
+ * Helper function to add a character to a buffer or print it directly
+ */
+static void add_char_to_buffer(char c, char* buffer, size_t size, int* pos, int* count, bool buffered) {
+    if (buffered) {
+        if ((size_t)(*pos) < size - 1) {
+            buffer[(*pos)++] = c;
+        }
+    } else {
+        print_char(c);
+    }
+    (*count)++;
+}
+
+/**
  * @brief Print formatted data to a buffer
  * 
  * @param buffer Buffer to store output, or NULL to print directly
@@ -223,24 +237,15 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
     int count = 0;
     bool buffered = (buffer != NULL);
     int pos = 0;
-    
-    // Function to add a character to the buffer or print it
-    auto void add_char(char c) {
-        if (buffered) {
-            if ((size_t)pos < size - 1) {
-                buffer[pos++] = c;
-            }
-        } else {
-            print_char(c);
-        }
-        count++;
-    }
+    int width = 0;
+    char pad = ' ';
+    int is_long = 0;
     
     // Parse format string
     while (*format) {
         if (*format != '%') {
             // Regular character
-            add_char(*format++);
+            add_char_to_buffer(*format++, buffer, size, &pos, &count, buffered);
             continue;
         }
         
@@ -249,15 +254,15 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
         
         // Handle %% (literal %)
         if (*format == '%') {
-            add_char('%');
+            add_char_to_buffer('%', buffer, size, &pos, &count, buffered);
             format++;
             continue;
         }
         
         // Parse flags and modifiers
-        int width = 0;
-        char pad = ' ';
-        int is_long = 0;
+        width = 0;
+        pad = ' ';
+        is_long = 0;
         parse_format_flags(&format, &width, &pad, &is_long);
         
         // Handle the format specifier
@@ -265,7 +270,7 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
             case 'c': {
                 // Character
                 char c = (char)va_arg(args, int);
-                add_char(c);
+                add_char_to_buffer(c, buffer, size, &pos, &count, buffered);
                 break;
             }
                 
@@ -286,13 +291,13 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 
                 // Pad if necessary
                 while (len < width) {
-                    add_char(pad);
+                    add_char_to_buffer(pad, buffer, size, &pos, &count, buffered);
                     width--;
                 }
                 
                 // Output the string
                 while (*str) {
-                    add_char(*str++);
+                    add_char_to_buffer(*str++, buffer, size, &pos, &count, buffered);
                 }
                 break;
             }
@@ -302,16 +307,13 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 // Signed decimal
                 if (is_long == 0) {
                     int value = va_arg(args, int);
-                    int len = print_number(value, 10, false, width, pad, true);
-                    count += len;
+                    count += print_number(value, 10, false, width, pad, true);
                 } else if (is_long == 1) {
                     long value = va_arg(args, long);
-                    int len = print_number(value, 10, false, width, pad, true);
-                    count += len;
+                    count += print_number(value, 10, false, width, pad, true);
                 } else {
                     long long value = va_arg(args, long long);
-                    int len = print_number(value, 10, false, width, pad, true);
-                    count += len;
+                    count += print_number(value, 10, false, width, pad, true);
                 }
                 break;
             }
@@ -320,16 +322,13 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 // Unsigned decimal
                 if (is_long == 0) {
                     unsigned int value = va_arg(args, unsigned int);
-                    int len = print_unsigned(value, 10, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 10, false, width, pad);
                 } else if (is_long == 1) {
                     unsigned long value = va_arg(args, unsigned long);
-                    int len = print_unsigned(value, 10, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 10, false, width, pad);
                 } else {
                     unsigned long long value = va_arg(args, unsigned long long);
-                    int len = print_unsigned(value, 10, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 10, false, width, pad);
                 }
                 break;
             }
@@ -340,27 +339,23 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 bool uppercase = (*format == 'X');
                 if (is_long == 0) {
                     unsigned int value = va_arg(args, unsigned int);
-                    int len = print_unsigned(value, 16, uppercase, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 16, uppercase, width, pad);
                 } else if (is_long == 1) {
                     unsigned long value = va_arg(args, unsigned long);
-                    int len = print_unsigned(value, 16, uppercase, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 16, uppercase, width, pad);
                 } else {
                     unsigned long long value = va_arg(args, unsigned long long);
-                    int len = print_unsigned(value, 16, uppercase, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 16, uppercase, width, pad);
                 }
                 break;
             }
                 
             case 'p': {
                 // Pointer (treat as %#lx)
-                add_char('0');
-                add_char('x');
+                add_char_to_buffer('0', buffer, size, &pos, &count, buffered);
+                add_char_to_buffer('x', buffer, size, &pos, &count, buffered);
                 void* value = va_arg(args, void*);
-                int len = print_unsigned((unsigned long)value, 16, false, width, pad);
-                count += len;
+                count += print_unsigned((unsigned long)value, 16, false, width, pad);
                 break;
             }
                 
@@ -368,16 +363,13 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 // Octal
                 if (is_long == 0) {
                     unsigned int value = va_arg(args, unsigned int);
-                    int len = print_unsigned(value, 8, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 8, false, width, pad);
                 } else if (is_long == 1) {
                     unsigned long value = va_arg(args, unsigned long);
-                    int len = print_unsigned(value, 8, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 8, false, width, pad);
                 } else {
                     unsigned long long value = va_arg(args, unsigned long long);
-                    int len = print_unsigned(value, 8, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 8, false, width, pad);
                 }
                 break;
             }
@@ -386,24 +378,21 @@ static int vprintf_internal(char* buffer, size_t size, const char* format, va_li
                 // Binary (non-standard)
                 if (is_long == 0) {
                     unsigned int value = va_arg(args, unsigned int);
-                    int len = print_unsigned(value, 2, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 2, false, width, pad);
                 } else if (is_long == 1) {
                     unsigned long value = va_arg(args, unsigned long);
-                    int len = print_unsigned(value, 2, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 2, false, width, pad);
                 } else {
                     unsigned long long value = va_arg(args, unsigned long long);
-                    int len = print_unsigned(value, 2, false, width, pad);
-                    count += len;
+                    count += print_unsigned(value, 2, false, width, pad);
                 }
                 break;
             }
                 
             default:
                 // Unknown format specifier, just print it
-                add_char('%');
-                add_char(*format);
+                add_char_to_buffer('%', buffer, size, &pos, &count, buffered);
+                add_char_to_buffer(*format, buffer, size, &pos, &count, buffered);
                 break;
         }
         
