@@ -94,3 +94,152 @@ bool serial_init_port(uint16_t port, uint16_t baud) {
     
     // Set divisor (low byte then high byte)
     outb(port + SERIAL_DIVISOR_LO, baud & 0xFF);
+    outb(port + SERIAL_DIVISOR_HI, (baud >> 8) & 0xFF);
+    
+    // 8 data bits, no parity, 1 stop bit
+    outb(port + SERIAL_LINE_CTRL, SERIAL_LCR_8BITS);
+    
+    // Enable FIFO, clear buffers, and set trigger level
+    outb(port + SERIAL_FIFO_CTRL, SERIAL_FCR_ENABLE | SERIAL_FCR_CLEAR_RX | 
+                                   SERIAL_FCR_CLEAR_TX | SERIAL_FCR_TRIGGER_14);
+    
+    // DTR, RTS, and OUT2 enabled (normal operation)
+    outb(port + SERIAL_MODEM_CTRL, SERIAL_MCR_DTR | SERIAL_MCR_RTS | SERIAL_MCR_OUT2);
+    
+    // Test the serial port (loopback test)
+    outb(port + SERIAL_MODEM_CTRL, SERIAL_MCR_LOOP | SERIAL_MCR_DTR | SERIAL_MCR_RTS);
+    
+    // Send a test byte
+    outb(port + SERIAL_DATA, 0xAE);
+    
+    // Check if we received the same byte
+    if (inb(port + SERIAL_DATA) != 0xAE) {
+        // Failed loopback test
+        return false;
+    }
+    
+    // Return to normal operation
+    outb(port + SERIAL_MODEM_CTRL, SERIAL_MCR_DTR | SERIAL_MCR_RTS | SERIAL_MCR_OUT2);
+    
+    return true;
+}
+
+/**
+ * @brief Check if the serial transmitter is empty
+ * 
+ * @param port Serial port base address
+ * @return true if transmitter is empty, false otherwise
+ */
+static bool serial_transmit_empty(uint16_t port) {
+    return (inb(port + SERIAL_LINE_STAT) & SERIAL_LSR_THRE) != 0;
+}
+
+/**
+ * @brief Send a byte to the serial port
+ * 
+ * @param port Serial port base address
+ * @param data Byte to send
+ */
+void serial_write_byte(uint16_t port, uint8_t data) {
+    // Wait until the transmit buffer is empty
+    while (!serial_transmit_empty(port)) {
+        // Do nothing, busy wait
+    }
+    
+    // Send the byte
+    outb(port + SERIAL_DATA, data);
+}
+
+/**
+ * @brief Check if data is available to read from the serial port
+ * 
+ * @param port Serial port base address
+ * @return true if data is available, false otherwise
+ */
+static bool serial_data_ready(uint16_t port) {
+    return (inb(port + SERIAL_LINE_STAT) & SERIAL_LSR_DR) != 0;
+}
+
+/**
+ * @brief Read a byte from the serial port
+ * 
+ * @param port Serial port base address
+ * @return Byte read from the serial port, or 0 if no data available
+ */
+uint8_t serial_read_byte(uint16_t port) {
+    // Check if data is available
+    if (!serial_data_ready(port)) {
+        return 0;
+    }
+    
+    // Read the byte
+    return inb(port + SERIAL_DATA);
+}
+
+/**
+ * @brief Write a string to the serial port
+ * 
+ * @param port Serial port base address
+ * @param str String to write
+ */
+void serial_write_string(uint16_t port, const char* str) {
+    for (size_t i = 0; str[i] != '\0'; i++) {
+        serial_write_byte(port, str[i]);
+    }
+}
+
+/**
+ * @brief Write a string to the debug serial port
+ * 
+ * @param str String to write
+ */
+void serial_debug_print(const char* str) {
+    if (serial_initialized) {
+        serial_write_string(debug_port, str);
+    }
+}
+
+/**
+ * @brief Write a formatted string to the debug serial port
+ * 
+ * @param fmt Format string
+ * @param ... Arguments to format
+ */
+void serial_debug_printf(const char* fmt, ...) {
+    if (!serial_initialized) {
+        return;
+    }
+    
+    char buffer[1024];
+    va_list args;
+    va_start(args, fmt);
+    int len = vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    
+    // Ensure null termination
+    buffer[1023] = '\0';
+    
+    serial_write_string(debug_port, buffer);
+}
+
+/**
+ * @brief Initialize the serial ports for debugging
+ */
+void serial_init(void) {
+    // Initialize COM1 at 38400 bps
+    if (serial_init_port(SERIAL_COM1, SERIAL_BAUD_38400)) {
+        debug_port = SERIAL_COM1;
+        serial_initialized = true;
+        serial_debug_print("Serial: COM1 initialized at 38400 bps\r\n");
+    } else {
+        // Try COM2 if COM1 failed
+        if (serial_init_port(SERIAL_COM2, SERIAL_BAUD_38400)) {
+            debug_port = SERIAL_COM2;
+            serial_initialized = true;
+            serial_debug_print("Serial: COM2 initialized at 38400 bps\r\n");
+        } else {
+            // Both COM1 and COM2 failed
+            serial_initialized = false;
+        }
+    }
+}
