@@ -563,6 +563,24 @@ int kprintf(const char* fmt, ...) {
     return count;
 }
 
+// Buffer for snprintf
+static char* snprintf_buffer = NULL;
+static size_t snprintf_position = 0;
+static size_t snprintf_size = 0;
+
+/**
+ * @brief Custom putchar for snprintf
+ * 
+ * @param c Character to output
+ */
+static void snprintf_putchar(char c) {
+    if (snprintf_position < snprintf_size - 1) {
+        snprintf_buffer[snprintf_position++] = c;
+    }
+    // We always count the character even if we don't store it
+    // This allows proper return value for truncated strings
+}
+
 /**
  * @brief Safe snprintf implementation
  * 
@@ -573,27 +591,39 @@ int kprintf(const char* fmt, ...) {
  * @return Number of characters that would have been written if size was unlimited
  */
 int snprintf(char* buffer, size_t size, const char* fmt, ...) {
-    // Save current output mode
+    if (size == 0) return 0;
+    if (buffer == NULL) return 0;
+    
+    // Save current output mode and setup buffer
     int old_mode = kprintf_mode;
+    void (*old_putchar)(char) = putchar;
     
-    // Create a custom output mode that writes to the buffer
-    // We'll implement this later
+    // Setup snprintf state
+    snprintf_buffer = buffer;
+    snprintf_position = 0;
+    snprintf_size = size;
     
+    // Redirect output to our custom putchar
+    putchar = snprintf_putchar;
+    
+    // Process the format string with our args
     va_list args;
     va_start(args, fmt);
     
-    // Here we would call a function like vsprintf, but we'll simplify
-    // and implement this later
-    int result = 0;
-    
-    // For now, just put an empty string
-    if (size > 0) {
-        buffer[0] = '\0';
-    }
+    // We'll just use our existing kprintf for simplicity
+    int result = kprintf(fmt, args);
     
     va_end(args);
     
+    // Ensure null termination
+    if (snprintf_position < snprintf_size) {
+        snprintf_buffer[snprintf_position] = '\0';
+    } else {
+        snprintf_buffer[snprintf_size - 1] = '\0';
+    }
+    
     // Restore original output mode
+    putchar = old_putchar;
     kprintf_mode = old_mode;
     
     return result;
