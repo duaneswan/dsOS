@@ -6,200 +6,190 @@
 #include "../../include/kernel.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // VGA text mode buffer address
-#define VGA_BUFFER          0xB8000
-#define VGA_WIDTH           80
-#define VGA_HEIGHT          25
+#define VGA_TEXT_BUFFER 0xB8000
 
-// VGA colors
-#define VGA_COLOR_BLACK     0
-#define VGA_COLOR_BLUE      1
-#define VGA_COLOR_GREEN     2
-#define VGA_COLOR_CYAN      3
-#define VGA_COLOR_RED       4
-#define VGA_COLOR_MAGENTA   5
-#define VGA_COLOR_BROWN     6
-#define VGA_COLOR_LGRAY     7
-#define VGA_COLOR_DGRAY     8
-#define VGA_COLOR_LBLUE     9
-#define VGA_COLOR_LGREEN    10
-#define VGA_COLOR_LCYAN     11
-#define VGA_COLOR_LRED      12
-#define VGA_COLOR_LMAGENTA  13
-#define VGA_COLOR_YELLOW    14
-#define VGA_COLOR_WHITE     15
+// VGA dimensions
+#define VGA_WIDTH  80
+#define VGA_HEIGHT 25
 
-// Cursor control ports
+// VGA controller ports
 #define VGA_CTRL_REGISTER   0x3D4
 #define VGA_DATA_REGISTER   0x3D5
-#define VGA_CURSOR_HIGH     14
-#define VGA_CURSOR_LOW      15
+#define VGA_CURSOR_HIGH     0x0E
+#define VGA_CURSOR_LOW      0x0F
 
-// VGA state variables
-static uint16_t* vga_buffer = (uint16_t*)VGA_BUFFER;
-static uint8_t vga_color;
-static uint8_t cursor_x = 0;
-static uint8_t cursor_y = 0;
-static bool cursor_enabled = true;
+// Current state
+static uint16_t* vga_buffer = (uint16_t*)VGA_TEXT_BUFFER;
+static uint8_t vga_color = 0;
+static uint8_t vga_cursor_x = 0;
+static uint8_t vga_cursor_y = 0;
+static bool vga_cursor_enabled = true;
 
 /**
- * @brief Make a VGA color attribute from foreground and background colors
+ * @brief Create a VGA color attribute
  * 
  * @param fg Foreground color (0-15)
- * @param bg Background color (0-15)
- * @return VGA color attribute
+ * @param bg Background color (0-7)
+ * @return color attribute
  */
 uint8_t vga_make_color(uint8_t fg, uint8_t bg) {
     return (bg << 4) | (fg & 0x0F);
 }
 
 /**
- * @brief Make a VGA entry from character and color attribute
+ * @brief Create a VGA character with color
  * 
  * @param c Character
  * @param color Color attribute
- * @return VGA entry
+ * @return VGA character entry
  */
-static uint16_t vga_make_entry(char c, uint8_t color) {
+static uint16_t vga_make_char(char c, uint8_t color) {
     return (uint16_t)c | ((uint16_t)color << 8);
 }
 
 /**
- * @brief Update the hardware cursor position
- */
-static void vga_update_cursor(void) {
-    if (!cursor_enabled) {
-        return;
-    }
-    
-    uint16_t position = cursor_y * VGA_WIDTH + cursor_x;
-    
-    outb(VGA_CTRL_REGISTER, VGA_CURSOR_LOW);
-    outb(VGA_DATA_REGISTER, position & 0xFF);
-    outb(VGA_CTRL_REGISTER, VGA_CURSOR_HIGH);
-    outb(VGA_DATA_REGISTER, (position >> 8) & 0xFF);
-}
-
-/**
- * @brief Set the cursor position
+ * @brief Set the hardware cursor position
  * 
- * @param x X coordinate (column)
- * @param y Y coordinate (row)
+ * @param x X position (0-79)
+ * @param y Y position (0-24)
  */
 void vga_set_cursor_pos(int x, int y) {
-    // Validate position
+    // Bounds checking
     if (x < 0) x = 0;
     if (x >= VGA_WIDTH) x = VGA_WIDTH - 1;
     if (y < 0) y = 0;
     if (y >= VGA_HEIGHT) y = VGA_HEIGHT - 1;
     
-    cursor_x = x;
-    cursor_y = y;
-    vga_update_cursor();
+    // Save current position
+    vga_cursor_x = x;
+    vga_cursor_y = y;
+    
+    // Only update hardware cursor if enabled
+    if (vga_cursor_enabled) {
+        uint16_t pos = y * VGA_WIDTH + x;
+        
+        outb(VGA_CTRL_REGISTER, VGA_CURSOR_HIGH);
+        outb(VGA_DATA_REGISTER, (pos >> 8) & 0xFF);
+        outb(VGA_CTRL_REGISTER, VGA_CURSOR_LOW);
+        outb(VGA_DATA_REGISTER, pos & 0xFF);
+    }
 }
 
 /**
- * @brief Enable or disable the cursor
+ * @brief Enable or disable the hardware cursor
  * 
  * @param enable True to enable, false to disable
  */
 void vga_enable_cursor(bool enable) {
-    cursor_enabled = enable;
+    vga_cursor_enabled = enable;
     
     if (enable) {
-        // Set cursor shape (start and end scanlines)
+        // Enable cursor with size (start and end scan lines)
+        // Typical values: start=14, end=15 (underline cursor)
         outb(VGA_CTRL_REGISTER, 0x0A);
-        outb(VGA_DATA_REGISTER, (inb(VGA_DATA_REGISTER) & 0xC0) | 0);  // Start scanline
-        
+        outb(VGA_DATA_REGISTER, (inb(VGA_DATA_REGISTER) & 0xC0) | 14);
         outb(VGA_CTRL_REGISTER, 0x0B);
-        outb(VGA_DATA_REGISTER, (inb(VGA_DATA_REGISTER) & 0xE0) | 15); // End scanline
+        outb(VGA_DATA_REGISTER, (inb(VGA_DATA_REGISTER) & 0xE0) | 15);
         
         // Update cursor position
-        vga_update_cursor();
+        vga_set_cursor_pos(vga_cursor_x, vga_cursor_y);
     } else {
-        // Disable cursor (set start scanline beyond end scanline)
+        // Disable cursor (set bit 5 of cursor start register)
         outb(VGA_CTRL_REGISTER, 0x0A);
         outb(VGA_DATA_REGISTER, 0x20);
     }
 }
 
 /**
- * @brief Scroll the screen if needed
+ * @brief Get cursor position
+ * 
+ * @param x Pointer to store X position
+ * @param y Pointer to store Y position
  */
-static void vga_scroll(void) {
-    if (cursor_y >= VGA_HEIGHT) {
-        // Move everything up one line
-        for (int y = 0; y < VGA_HEIGHT - 1; y++) {
-            for (int x = 0; x < VGA_WIDTH; x++) {
-                vga_buffer[y * VGA_WIDTH + x] = vga_buffer[(y + 1) * VGA_WIDTH + x];
-            }
-        }
-        
-        // Clear the last line
-        for (int x = 0; x < VGA_WIDTH; x++) {
-            vga_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = vga_make_entry(' ', vga_color);
-        }
-        
-        cursor_y = VGA_HEIGHT - 1;
-    }
+void vga_get_cursor_pos(int* x, int* y) {
+    if (x) *x = vga_cursor_x;
+    if (y) *y = vga_cursor_y;
 }
 
 /**
- * @brief Set text mode color
+ * @brief Set current text color
  * 
  * @param fg Foreground color (0-15)
- * @param bg Background color (0-15)
+ * @param bg Background color (0-7)
  */
 void vga_set_color(uint8_t fg, uint8_t bg) {
     vga_color = vga_make_color(fg, bg);
 }
 
 /**
- * @brief Clear the screen
+ * @brief Clear the screen with the specified color
+ * 
+ * @param color Background color for cleared screen
  */
-void vga_clear(void) {
-    // Fill the entire VGA buffer with spaces using the current color
+void vga_clear_screen(uint8_t color) {
+    uint16_t blank = vga_make_char(' ', vga_make_color(VGA_COLOR_WHITE, color));
+    
     for (int y = 0; y < VGA_HEIGHT; y++) {
         for (int x = 0; x < VGA_WIDTH; x++) {
-            vga_buffer[y * VGA_WIDTH + x] = vga_make_entry(' ', vga_color);
+            vga_buffer[y * VGA_WIDTH + x] = blank;
         }
     }
     
-    // Reset cursor position
-    cursor_x = 0;
-    cursor_y = 0;
-    vga_update_cursor();
+    vga_set_cursor_pos(0, 0);
 }
 
 /**
- * @brief Initialize the VGA driver
+ * @brief Scroll the screen up by one line
  */
-void vga_init(void) {
-    // Set default color (light gray on black)
-    vga_set_color(VGA_COLOR_LGRAY, VGA_COLOR_BLACK);
+static void vga_scroll(void) {
+    // Get a blank character with current color
+    uint16_t blank = vga_make_char(' ', vga_color);
     
-    // Clear the screen
-    vga_clear();
+    // Move all lines up by one
+    for (int y = 0; y < VGA_HEIGHT - 1; y++) {
+        for (int x = 0; x < VGA_WIDTH; x++) {
+            vga_buffer[y * VGA_WIDTH + x] = vga_buffer[(y + 1) * VGA_WIDTH + x];
+        }
+    }
     
-    // Enable the cursor
-    vga_enable_cursor(true);
-    
-    kprintf("VGA: Initialized text mode %dx%d\n", VGA_WIDTH, VGA_HEIGHT);
+    // Clear the last line
+    for (int x = 0; x < VGA_WIDTH; x++) {
+        vga_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = blank;
+    }
 }
 
 /**
- * @brief Put a character at a specific position with specific color
+ * @brief Put a character at the specified position
  * 
  * @param c Character to put
- * @param x X coordinate (column)
- * @param y Y coordinate (row)
  * @param color Color attribute
+ * @param x X position
+ * @param y Y position
  */
-void vga_putchar_at(char c, int x, int y, uint8_t color) {
-    // Check if position is valid
-    if (x >= 0 && x < VGA_WIDTH && y >= 0 && y < VGA_HEIGHT) {
-        vga_buffer[y * VGA_WIDTH + x] = vga_make_entry(c, color);
+static void vga_putchar_at(char c, uint8_t color, int x, int y) {
+    // Bounds checking
+    if (x < 0 || x >= VGA_WIDTH || y < 0 || y >= VGA_HEIGHT) {
+        return;
+    }
+    
+    // Put the character
+    vga_buffer[y * VGA_WIDTH + x] = vga_make_char(c, color);
+}
+
+/**
+ * @brief Handle a new line
+ */
+static void vga_newline(void) {
+    vga_cursor_x = 0;
+    vga_cursor_y++;
+    
+    // Scroll if at bottom of screen
+    if (vga_cursor_y >= VGA_HEIGHT) {
+        vga_scroll();
+        vga_cursor_y = VGA_HEIGHT - 1;
     }
 }
 
@@ -212,48 +202,51 @@ void vga_putchar(char c) {
     // Handle special characters
     switch (c) {
         case '\n':  // Newline
-            cursor_x = 0;
-            cursor_y++;
+            vga_newline();
             break;
             
         case '\r':  // Carriage return
-            cursor_x = 0;
-            break;
-            
-        case '\t':  // Tab (8 spaces)
-            cursor_x = (cursor_x + 8) & ~7;
+            vga_cursor_x = 0;
             break;
             
         case '\b':  // Backspace
-            if (cursor_x > 0) {
-                cursor_x--;
-                vga_putchar_at(' ', cursor_x, cursor_y, vga_color);
+            if (vga_cursor_x > 0) {
+                vga_cursor_x--;
+                vga_putchar_at(' ', vga_color, vga_cursor_x, vga_cursor_y);
+            } else if (vga_cursor_y > 0) {
+                vga_cursor_y--;
+                vga_cursor_x = VGA_WIDTH - 1;
+                vga_putchar_at(' ', vga_color, vga_cursor_x, vga_cursor_y);
             }
             break;
             
-        default:  // Regular character
-            vga_putchar_at(c, cursor_x, cursor_y, vga_color);
-            cursor_x++;
+        case '\t':  // Tab
+            // Move to next tab stop (every 8 columns)
+            vga_cursor_x = (vga_cursor_x + 8) & ~7;
+            if (vga_cursor_x >= VGA_WIDTH) {
+                vga_newline();
+            }
+            break;
+            
+        default:  // Normal character
+            vga_putchar_at(c, vga_color, vga_cursor_x, vga_cursor_y);
+            vga_cursor_x++;
+            
+            // Wrap if reached end of line
+            if (vga_cursor_x >= VGA_WIDTH) {
+                vga_newline();
+            }
             break;
     }
     
-    // Handle line wrapping
-    if (cursor_x >= VGA_WIDTH) {
-        cursor_x = 0;
-        cursor_y++;
-    }
-    
-    // Handle scrolling
-    vga_scroll();
-    
     // Update cursor position
-    vga_update_cursor();
+    vga_set_cursor_pos(vga_cursor_x, vga_cursor_y);
 }
 
 /**
- * @brief Print a string at the current cursor position
+ * @brief Put a string at the current cursor position
  * 
- * @param str String to print
+ * @param str String to put
  */
 void vga_print(const char* str) {
     while (*str) {
@@ -262,62 +255,45 @@ void vga_print(const char* str) {
 }
 
 /**
- * @brief Print a string at a specific position with specific color
- * 
- * @param str String to print
- * @param x X coordinate (column)
- * @param y Y coordinate (row)
- * @param color Color attribute
+ * @brief Initialize the VGA driver
  */
-void vga_print_at(const char* str, int x, int y, uint8_t color) {
-    int original_x = cursor_x;
-    int original_y = cursor_y;
-    uint8_t original_color = vga_color;
+void vga_init(void) {
+    // Set default colors (white on black)
+    vga_set_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
     
-    cursor_x = x;
-    cursor_y = y;
-    vga_color = color;
+    // Clear the screen
+    vga_clear_screen(VGA_COLOR_BLACK);
     
-    while (*str && cursor_x < VGA_WIDTH) {
-        if (*str == '\n') {
-            // Handle newline specially in direct positioning mode
-            break;
-        }
-        vga_putchar_at(*str++, cursor_x++, cursor_y, color);
-    }
+    // Enable cursor
+    vga_enable_cursor(true);
     
-    cursor_x = original_x;
-    cursor_y = original_y;
-    vga_color = original_color;
-    vga_update_cursor();
+    kprintf("VGA: Initialized text mode %dx%d\n", VGA_WIDTH, VGA_HEIGHT);
 }
 
 /**
- * @brief Get the character at a specific position
+ * @brief Put a formatted string to VGA (similar to printf)
  * 
- * @param x X coordinate (column)
- * @param y Y coordinate (row)
- * @return Character at position (0 if invalid position)
+ * @param fmt Format string
+ * @param ... Arguments
+ * @return Number of characters written
  */
-char vga_getchar_at(int x, int y) {
-    // Check if position is valid
-    if (x >= 0 && x < VGA_WIDTH && y >= 0 && y < VGA_HEIGHT) {
-        return vga_buffer[y * VGA_WIDTH + x] & 0xFF;
-    }
-    return 0;
+int vga_printf(const char* fmt, ...) {
+    char buffer[1024];
+    va_list args;
+    
+    va_start(args, fmt);
+    int ret = vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    
+    vga_print(buffer);
+    return ret;
 }
 
 /**
- * @brief Get the color attribute at a specific position
+ * @brief Terminal implementation for kernel printf
  * 
- * @param x X coordinate (column)
- * @param y Y coordinate (row)
- * @return Color attribute at position (0 if invalid position)
+ * @param c Character to output
  */
-uint8_t vga_getcolor_at(int x, int y) {
-    // Check if position is valid
-    if (x >= 0 && x < VGA_WIDTH && y >= 0 && y < VGA_HEIGHT) {
-        return (vga_buffer[y * VGA_WIDTH + x] >> 8) & 0xFF;
-    }
-    return 0;
+void terminal_putchar(char c) {
+    vga_putchar(c);
 }
