@@ -340,8 +340,7 @@ void kbd_init(void) {
     kb_send_keyboard_command(KB_ENABLE_SCANNING);
     
     // Register the keyboard interrupt handler
-    extern void register_interrupt_handler(uint8_t, void*);
-    register_interrupt_handler(33, keyboard_handler);
+    register_interrupt_handler(33, (interrupt_handler_t)keyboard_handler);
     
     // Unmask (enable) IRQ1 in the PIC
     extern void pic_unmask_irq(uint8_t);
