@@ -283,6 +283,8 @@ int kprintf(const char* fmt, ...) {
     // Output to both VGA and serial
     vga_puts(buf);
     serial_puts(buf);
+    
+    return i; // Return the number of characters printed
 }
 
 /**
