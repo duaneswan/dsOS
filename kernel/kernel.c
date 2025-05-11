@@ -17,7 +17,7 @@ void mm_init(uintptr_t mem_upper);
 void serial_init(void);
 void vga_init(void);
 void pic_init(void);
-void timer_init(void);
+void timer_init(uint32_t frequency);
 void kbd_init(void);
 void hos_init(void);
 void sched_init(void);
