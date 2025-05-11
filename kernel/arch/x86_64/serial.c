@@ -1,271 +1,202 @@
 /**
  * @file serial.c
- * @brief Serial port driver for debugging output
+ * @brief Serial port driver implementation
  */
 
 #include "../../include/kernel.h"
-#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
-// Serial port base addresses
-#define COM1 0x3F8
-#define COM2 0x2F8
-#define COM3 0x3E8
-#define COM4 0x2E8
+// Serial port registers
+#define SERIAL_PORT_COM1 0x3F8
+#define SERIAL_PORT_COM2 0x2F8
+#define SERIAL_PORT_COM3 0x3E8
+#define SERIAL_PORT_COM4 0x2E8
 
-// Register offsets
-#define REG_DATA        0   // Data register (read/write)
-#define REG_INT_ENABLE  1   // Interrupt enable register (write)
-#define REG_INT_ID      2   // Interrupt identification register (read)
-#define REG_FIFO_CTRL   2   // FIFO control register (write)
-#define REG_LINE_CTRL   3   // Line control register
-#define REG_MODEM_CTRL  4   // Modem control register
-#define REG_LINE_STATUS 5   // Line status register
-#define REG_MODEM_STATUS 6  // Modem status register
-#define REG_SCRATCH     7   // Scratch register
-
-// Line status register bits
-#define LSR_DATA_READY  0x01  // Data ready
-#define LSR_OVERRUN     0x02  // Overrun error
-#define LSR_PARITY_ERR  0x04  // Parity error
-#define LSR_FRAMING_ERR 0x08  // Framing error
-#define LSR_BREAK       0x10  // Break signal received
-#define LSR_TX_BUFFER   0x20  // Transmitter holding register empty
-#define LSR_TX_EMPTY    0x40  // Transmitter empty
-#define LSR_FIFO_ERR    0x80  // FIFO error
+// Serial port register offsets
+#define SERIAL_REG_DATA          0 // Data register (RW)
+#define SERIAL_REG_INT_ENABLE    1 // Interrupt enable (W)
+#define SERIAL_REG_FIFO_CTRL     2 // FIFO control register (W)
+#define SERIAL_REG_LINE_CTRL     3 // Line control register (W)
+#define SERIAL_REG_MODEM_CTRL    4 // Modem control register (W)
+#define SERIAL_REG_LINE_STATUS   5 // Line status register (R)
+#define SERIAL_REG_MODEM_STATUS  6 // Modem status register (R)
+#define SERIAL_REG_SCRATCH       7 // Scratch register (RW)
 
 // Line control register bits
-#define LCR_5BIT        0x00  // 5-bit characters
-#define LCR_6BIT        0x01  // 6-bit characters
-#define LCR_7BIT        0x02  // 7-bit characters
-#define LCR_8BIT        0x03  // 8-bit characters
-#define LCR_STOP_BIT    0x04  // Use 2 stop bits (1.5 if 5-bit characters)
-#define LCR_PARITY      0x08  // Enable parity
-#define LCR_EVEN_PARITY 0x10  // Use even parity (otherwise odd)
-#define LCR_STICK_PARITY 0x20 // Stick parity
-#define LCR_BREAK       0x40  // Set break condition
-#define LCR_DLAB        0x80  // Divisor latch access bit
+#define SERIAL_LCR_5BITS         0x00 // 5 data bits
+#define SERIAL_LCR_6BITS         0x01 // 6 data bits
+#define SERIAL_LCR_7BITS         0x02 // 7 data bits
+#define SERIAL_LCR_8BITS         0x03 // 8 data bits
+#define SERIAL_LCR_STOP          0x04 // Stop bits (0=1, 1=2)
+#define SERIAL_LCR_PARITY        0x08 // Parity enable
+#define SERIAL_LCR_EVEN_PARITY   0x10 // Even parity
+#define SERIAL_LCR_STICK_PARITY  0x20 // Stick parity
+#define SERIAL_LCR_BREAK         0x40 // Break enable
+#define SERIAL_LCR_DLAB          0x80 // Divisor latch access bit
 
 // FIFO control register bits
-#define FCR_ENABLE      0x01  // Enable FIFO
-#define FCR_CLEAR_RX    0x02  // Clear receive FIFO
-#define FCR_CLEAR_TX    0x04  // Clear transmit FIFO
-#define FCR_DMA_MODE    0x08  // DMA mode select
-#define FCR_TRIGGER_1   0x00  // Trigger level 1 byte
-#define FCR_TRIGGER_4   0x40  // Trigger level 4 bytes
-#define FCR_TRIGGER_8   0x80  // Trigger level 8 bytes
-#define FCR_TRIGGER_14  0xC0  // Trigger level 14 bytes
+#define SERIAL_FCR_ENABLE        0x01 // FIFO enable
+#define SERIAL_FCR_CLEAR_RECV    0x02 // Receiver FIFO reset
+#define SERIAL_FCR_CLEAR_XMIT    0x04 // Transmitter FIFO reset
+#define SERIAL_FCR_DMA           0x08 // DMA mode select
+#define SERIAL_FCR_TRIG_1        0x00 // Trigger level (1 byte)
+#define SERIAL_FCR_TRIG_4        0x40 // Trigger level (4 bytes)
+#define SERIAL_FCR_TRIG_8        0x80 // Trigger level (8 bytes)
+#define SERIAL_FCR_TRIG_14       0xC0 // Trigger level (14 bytes)
 
 // Modem control register bits
-#define MCR_DTR         0x01  // Data terminal ready
-#define MCR_RTS         0x02  // Request to send
-#define MCR_OUT1        0x04  // User-defined output 1
-#define MCR_OUT2        0x08  // User-defined output 2 (must be set for interrupts)
-#define MCR_LOOPBACK    0x10  // Loopback mode
+#define SERIAL_MCR_DTR           0x01 // Data terminal ready
+#define SERIAL_MCR_RTS           0x02 // Request to send
+#define SERIAL_MCR_OUT1          0x04 // Output 1
+#define SERIAL_MCR_OUT2          0x08 // Output 2 (enables IRQs)
+#define SERIAL_MCR_LOOPBACK      0x10 // Loopback mode
 
-// Driver state
-uint16_t debug_port = COM1;
+// Line status register bits
+#define SERIAL_LSR_DATA_READY    0x01 // Data ready
+#define SERIAL_LSR_OVERRUN_ERR   0x02 // Overrun error
+#define SERIAL_LSR_PARITY_ERR    0x04 // Parity error
+#define SERIAL_LSR_FRAMING_ERR   0x08 // Framing error
+#define SERIAL_LSR_BREAK         0x10 // Break indicator
+#define SERIAL_LSR_THRE          0x20 // Transmitter holding register empty
+#define SERIAL_LSR_TEMT          0x40 // Transmitter empty
+#define SERIAL_LSR_FIFO_ERR      0x80 // FIFO error
+
+// Default baud rates
+#define SERIAL_BAUD_115200       1     // 115200 bps
+#define SERIAL_BAUD_57600        2     // 57600 bps
+#define SERIAL_BAUD_38400        3     // 38400 bps
+#define SERIAL_BAUD_19200        6     // 19200 bps
+#define SERIAL_BAUD_9600         12    // 9600 bps
+#define SERIAL_BAUD_4800         24    // 4800 bps
+#define SERIAL_BAUD_2400         48    // 2400 bps
+#define SERIAL_BAUD_1200         96    // 1200 bps
+
+// Serial port state
+uint16_t debug_port = SERIAL_PORT_COM1;
 bool serial_initialized = false;
 
 /**
- * @brief Check if the serial port exists and is functional
+ * @brief Initialize a serial port
  * 
- * @param port Base address of the serial port
- * @return true if the port exists, false otherwise
+ * @param port Serial port (e.g., SERIAL_PORT_COM1)
  */
-static bool serial_port_exists(uint16_t port) {
-    // Save original modem control register value
-    uint8_t original = inb(port + REG_MODEM_CTRL);
-    
-    // Try to set and verify some bits
-    outb(port + REG_MODEM_CTRL, 0x1E); // 00011110 - All bits except loopback
-    io_wait();
-    
-    if (inb(port + REG_MODEM_CTRL) != 0x1E) {
-        // Restore original value
-        outb(port + REG_MODEM_CTRL, original);
-        return false;
-    }
-    
-    // Try to set and verify different bits
-    outb(port + REG_MODEM_CTRL, 0x0F); // 00001111 - Different bits
-    io_wait();
-    
-    if (inb(port + REG_MODEM_CTRL) != 0x0F) {
-        // Restore original value
-        outb(port + REG_MODEM_CTRL, original);
-        return false;
-    }
-    
-    // Restore original value
-    outb(port + REG_MODEM_CTRL, original);
-    return true;
-}
-
-/**
- * @brief Set the baud rate for the serial port
- * 
- * @param port Base address of the serial port
- * @param divisor Divisor for the baud rate (115200 / desired_baud_rate)
- */
-static void serial_set_baud(uint16_t port, uint16_t divisor) {
-    // Get current line control register value
-    uint8_t lcr = inb(port + REG_LINE_CTRL);
-    
-    // Set DLAB (Divisor Latch Access Bit) to access divisor latches
-    outb(port + REG_LINE_CTRL, lcr | LCR_DLAB);
-    
-    // Set divisor (low byte then high byte)
-    outb(port + REG_DATA, divisor & 0xFF);
-    outb(port + REG_INT_ENABLE, (divisor >> 8) & 0xFF);
-    
-    // Clear DLAB to access normal registers
-    outb(port + REG_LINE_CTRL, lcr & ~LCR_DLAB);
-}
-
-/**
- * @brief Initialize the serial port for debugging
- * 
- * @param port Base address of the serial port to initialize
- * @param baud_rate Baud rate in bps (bits per second)
- * @return true if initialization succeeded, false otherwise
- */
-static bool serial_init_port(uint16_t port, uint32_t baud_rate) {
-    // Check if the port exists
-    if (!serial_port_exists(port)) {
-        return false;
-    }
-    
-    // Calculate divisor for baud rate
-    uint16_t divisor = 115200 / baud_rate;
-    
+void serial_init(uint16_t port) {
     // Disable interrupts
-    outb(port + REG_INT_ENABLE, 0x00);
+    outb(port + SERIAL_REG_INT_ENABLE, 0x00);
     
-    // Set baud rate
-    serial_set_baud(port, divisor);
+    // Enable DLAB (set baud rate divisor)
+    outb(port + SERIAL_REG_LINE_CTRL, SERIAL_LCR_DLAB);
     
-    // Set line control: 8 bits, no parity, 1 stop bit
-    outb(port + REG_LINE_CTRL, LCR_8BIT);
+    // Set divisor to 1 (115200 baud)
+    outb(port + SERIAL_REG_DATA, SERIAL_BAUD_115200);
+    outb(port + SERIAL_REG_INT_ENABLE, 0x00);
     
-    // Enable and configure FIFO
-    outb(port + REG_FIFO_CTRL, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14);
+    // 8 data bits, no parity, one stop bit
+    outb(port + SERIAL_REG_LINE_CTRL, SERIAL_LCR_8BITS);
     
-    // Set modem control: DTR, RTS, OUT2
-    outb(port + REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_OUT2);
+    // Enable FIFO, clear them, with 14-byte threshold
+    outb(port + SERIAL_REG_FIFO_CTRL, SERIAL_FCR_ENABLE | SERIAL_FCR_CLEAR_RECV | 
+                                      SERIAL_FCR_CLEAR_XMIT | SERIAL_FCR_TRIG_14);
     
-    // Verify FIFO is working by putting the controller in loopback mode
-    outb(port + REG_MODEM_CTRL, inb(port + REG_MODEM_CTRL) | MCR_LOOPBACK);
-    outb(port + REG_DATA, 0x55);
-    io_wait();
+    // IRQs enabled, RTS/DSR set
+    outb(port + SERIAL_REG_MODEM_CTRL, SERIAL_MCR_DTR | SERIAL_MCR_RTS | SERIAL_MCR_OUT2);
     
-    if (inb(port + REG_DATA) != 0x55) {
-        // FIFO test failed
-        outb(port + REG_MODEM_CTRL, inb(port + REG_MODEM_CTRL) & ~MCR_LOOPBACK);
-        return false;
+    // Set loopback mode, test the serial chip
+    outb(port + SERIAL_REG_MODEM_CTRL, SERIAL_MCR_LOOPBACK);
+    
+    // Send a test byte
+    outb(port + SERIAL_REG_DATA, 0xAE);
+    
+    // Check if we receive the test byte back
+    if (inb(port + SERIAL_REG_DATA) != 0xAE) {
+        // Serial port failed the test
+        return;
     }
     
-    // Disable loopback and enable normal operation
-    outb(port + REG_MODEM_CTRL, MCR_DTR | MCR_RTS | MCR_OUT2);
+    // Disable loopback, enable normal operation
+    outb(port + SERIAL_REG_MODEM_CTRL, SERIAL_MCR_DTR | SERIAL_MCR_RTS | SERIAL_MCR_OUT2);
     
-    return true;
+    // Save the debug port
+    debug_port = port;
+    serial_initialized = true;
 }
 
 /**
- * @brief Check if the serial transmitter is ready to send data
+ * @brief Check if the transmit buffer is empty
  * 
- * @param port Base address of the serial port
- * @return true if the transmitter is ready, false otherwise
+ * @param port Serial port
+ * @return true if empty, false otherwise
  */
-static bool serial_is_transmit_ready(uint16_t port) {
-    return (inb(port + REG_LINE_STATUS) & LSR_TX_BUFFER) != 0;
+bool serial_is_transmit_empty(uint16_t port) {
+    return inb(port + SERIAL_REG_LINE_STATUS) & SERIAL_LSR_THRE;
 }
 
 /**
- * @brief Check if there is data available to read from the serial port
+ * @brief Check if data is available to read
  * 
- * @param port Base address of the serial port
+ * @param port Serial port
  * @return true if data is available, false otherwise
  */
-static bool serial_is_data_ready(uint16_t port) {
-    return (inb(port + REG_LINE_STATUS) & LSR_DATA_READY) != 0;
+bool serial_has_received(uint16_t port) {
+    return inb(port + SERIAL_REG_LINE_STATUS) & SERIAL_LSR_DATA_READY;
 }
 
 /**
- * @brief Write a byte to the serial port
+ * @brief Write a byte to a serial port
  * 
- * @param port Base address of the serial port
- * @param data Byte to write
+ * @param port Serial port
+ * @param byte Byte to write
  */
-void serial_write_byte(uint16_t port, uint8_t data) {
-    // Wait for transmitter to be ready
-    while (!serial_is_transmit_ready(port)) {
-        // Add a small delay to avoid tight loops
-        io_wait();
-    }
+void serial_write_byte(uint16_t port, uint8_t byte) {
+    // Wait for the transmit buffer to be empty
+    while (!serial_is_transmit_empty(port));
     
-    // Write the data byte
-    outb(port + REG_DATA, data);
+    // Send the byte
+    outb(port, byte);
 }
 
 /**
- * @brief Read a byte from the serial port
+ * @brief Read a byte from a serial port
  * 
- * @param port Base address of the serial port
- * @return Byte read from the port, or 0 if no data available
+ * @param port Serial port
+ * @return Byte read
  */
 uint8_t serial_read_byte(uint16_t port) {
     // Wait for data to be available
-    while (!serial_is_data_ready(port)) {
-        // Add a small delay to avoid tight loops
-        io_wait();
-    }
+    while (!serial_has_received(port));
     
-    // Read the data byte
-    return inb(port + REG_DATA);
+    // Read the byte
+    return inb(port);
 }
 
 /**
- * @brief Write a string to the serial port
+ * @brief Write a string to a serial port
  * 
- * @param port Base address of the serial port
- * @param str Null-terminated string to write
+ * @param port Serial port
+ * @param str String to write
  */
-void serial_write_string(uint16_t port, const char* str) {
+void serial_write_str(uint16_t port, const char* str) {
     while (*str) {
-        // Convert LF to CRLF for terminal compatibility
-        if (*str == '\n') {
-            serial_write_byte(port, '\r');
-        }
         serial_write_byte(port, *str++);
     }
 }
 
 /**
- * @brief Initialize the serial driver
+ * @brief Set the baud rate of the serial port
+ * 
+ * @param port Serial port
+ * @param divisor Baud rate divisor
  */
-void serial_init(void) {
-    // Try to initialize COM ports in order
-    if (serial_init_port(COM1, 115200)) {
-        debug_port = COM1;
-        serial_initialized = true;
-    } else if (serial_init_port(COM2, 115200)) {
-        debug_port = COM2;
-        serial_initialized = true;
-    } else if (serial_init_port(COM3, 115200)) {
-        debug_port = COM3;
-        serial_initialized = true;
-    } else if (serial_init_port(COM4, 115200)) {
-        debug_port = COM4;
-        serial_initialized = true;
-    } else {
-        // No COM port found
-        serial_initialized = false;
-        return;
-    }
+void serial_set_baud_rate(uint16_t port, uint16_t divisor) {
+    // Enable DLAB (set baud rate divisor)
+    outb(port + SERIAL_REG_LINE_CTRL, SERIAL_LCR_DLAB);
     
-    // Send initial message
-    serial_write_string(debug_port, "\r\n--- dsOS Serial Debug Console ---\r\n");
-    serial_write_string(debug_port, "Serial port initialized at 115200 bps\r\n");
+    // Set divisor (lo/hi bytes)
+    outb(port + SERIAL_REG_DATA, divisor & 0xFF);
+    outb(port + SERIAL_REG_INT_ENABLE, (divisor >> 8) & 0xFF);
+    
+    // Restore line control register
+    outb(port + SERIAL_REG_LINE_CTRL, SERIAL_LCR_8BITS);
 }
