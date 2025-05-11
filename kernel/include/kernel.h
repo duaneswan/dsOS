@@ -193,9 +193,10 @@ static inline void wbinvd(void) {
 /**
  * @brief Panic-related definitions
  */
-#define PANIC_NORMAL    0
-#define PANIC_CRITICAL  1
-#define PANIC_HOS_BREACH 2
+#define PANIC_NORMAL          0
+#define PANIC_CRITICAL        1
+#define PANIC_HOS_BREACH      2
+#define PANIC_HARDWARE_FAULT  3
 
 // Printf output modes
 #define PRINTF_MODE_CONSOLE  0   // Output to console (VGA)
