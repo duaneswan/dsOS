@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 /**
  * @brief POSIX-compatible type definitions
@@ -31,6 +32,53 @@ typedef uint16_t gid_t;
  * @brief Architecture definitions
  */
 #define ARCH_X86_64
+
+/**
+ * @brief CPU register state structure
+ */
+typedef struct {
+    // General purpose registers
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rdi, rsi, rbp, rsp;
+    uint64_t r8, r9, r10, r11;
+    uint64_t r12, r13, r14, r15;
+    
+    // Segment registers
+    uint16_t cs, ds, es, fs, gs, ss;
+    
+    // Special registers
+    uint64_t rip;
+    uint64_t rflags;
+    uint64_t cr0, cr2, cr3, cr4;
+} registers_t;
+
+/**
+ * @brief VGA color constants
+ */
+#define VGA_COLOR_BLACK         0
+#define VGA_COLOR_BLUE          1
+#define VGA_COLOR_GREEN         2
+#define VGA_COLOR_CYAN          3
+#define VGA_COLOR_RED           4
+#define VGA_COLOR_MAGENTA       5
+#define VGA_COLOR_BROWN         6
+#define VGA_COLOR_LIGHT_GREY    7
+#define VGA_COLOR_DARK_GREY     8
+#define VGA_COLOR_LIGHT_BLUE    9
+#define VGA_COLOR_LIGHT_GREEN   10
+#define VGA_COLOR_LIGHT_CYAN    11
+#define VGA_COLOR_LIGHT_RED     12
+#define VGA_COLOR_LIGHT_MAGENTA 13
+#define VGA_COLOR_LIGHT_BROWN   14
+#define VGA_COLOR_WHITE         15
+
+/**
+ * @brief Hidden OS breach types
+ */
+#define HOS_BREACH_READ        0
+#define HOS_BREACH_WRITE       1
+#define HOS_BREACH_EXECUTE     2
+#define HOS_BREACH_DISAPPEAR   3
 
 /**
  * @brief Kernel symbol visibility
@@ -67,6 +115,20 @@ static inline void sti(void) {
 
 static inline void hlt(void) {
     __asm__ volatile("hlt");
+}
+
+static inline void halt(void) {
+    while (1) {
+        __asm__ volatile("cli; hlt");
+    }
+}
+
+static inline void disable_interrupts(void) {
+    __asm__ volatile("cli");
+}
+
+static inline void enable_interrupts(void) {
+    __asm__ volatile("sti");
 }
 
 static inline uint8_t inb(uint16_t port) {
@@ -135,12 +197,16 @@ static inline void wbinvd(void) {
 #define PANIC_CRITICAL  1
 #define PANIC_HOS_BREACH 2
 
-void panic(int type, const char* message, const char* file, int line);
-void kassert_func(bool condition, const char* message, const char* file, int line);
-void hos_breach(int breach_type, uintptr_t address, uint64_t expected, uint64_t actual);
-void halt(void) NORETURN;
+void panic(const char* file, int line, registers_t* regs, const char* fmt, ...) NORETURN;
+void assertion_failed(const char* file, int line, const char* expr);
+void hos_breach(const char* type, uint64_t address, registers_t* regs) NORETURN;
 
-#define kassert(cond) kassert_func((cond), #cond, __FILE__, __LINE__)
+#define kassert(expr) \
+    do { \
+        if (!(expr)) { \
+            assertion_failed(__FILE__, __LINE__, #expr); \
+        } \
+    } while (0)
 
 /**
  * @brief Memory manager functions (declared in memory.h)
@@ -176,14 +242,15 @@ char* strdup(const char* s);
  * @brief Console/print functions (declared in printf.h)
  */
 int kprintf(const char* fmt, ...);
-void kprintf_set_mode(int mode);
+int vkprintf(const char* fmt, va_list args);
 int snprintf(char* buffer, size_t size, const char* fmt, ...);
+int vsnprintf(char* buffer, size_t size, const char* fmt, va_list args);
 
 /**
  * @brief VGA console functions (declared in vga.h)
  */
 void vga_init(void);
-void vga_clear(void);
+void vga_clear_screen(uint8_t color);
 void vga_putchar(char c);
 void vga_print(const char* str);
 void vga_set_color(uint8_t fg, uint8_t bg);
@@ -194,30 +261,40 @@ void vga_set_cursor_pos(int x, int y);
 /**
  * @brief Serial port functions (declared in serial.h)
  */
-void serial_init(uint16_t port);
-void serial_write_byte(uint16_t port, uint8_t byte);
-uint8_t serial_read_byte(uint16_t port);
-void serial_write_str(uint16_t port, const char* str);
-bool serial_is_transmit_empty(uint16_t port);
-bool serial_has_received(uint16_t port);
+typedef struct serial_port_t serial_port_t;
+serial_port_t* serial_init(uint16_t port, uint32_t baud_rate);
+void serial_init_all(void);
+bool serial_is_initialized(serial_port_t* port);
+bool serial_write_char(serial_port_t* port, char c);
+bool serial_write_str(serial_port_t* port, const char* str);
+bool serial_printf(serial_port_t* port, const char* format, ...);
+int serial_read_char(serial_port_t* port);
+bool serial_test(serial_port_t* port);
 
 /**
- * @brief CPU/architecture specific functions (declared in cpu.h)
+ * @brief CPU/architecture specific functions
  */
 void gdt_init(void);
 void idt_init(void);
-void pic_init(void);
+void pic_init(uint8_t offset1, uint8_t offset2);
+void pic_send_eoi(uint8_t irq);
+void pic_mask_irq(uint8_t irq);
+void pic_unmask_irq(uint8_t irq);
 void timer_init(uint32_t frequency);
-void keyboard_init(void);
+uint64_t timer_get_ticks(void);
+uint64_t timer_get_ms(void);
+void timer_wait_ms(uint32_t ms);
+void sleep_timer_init(void);
+void kb_init(void);
 
 /**
- * @brief Interrupt handlers (declared in interrupt.h)
+ * @brief Interrupt handlers
  */
 typedef void (*interrupt_handler_t)(void);
 void register_interrupt_handler(uint8_t interrupt, interrupt_handler_t handler);
 
 /**
- * @brief Hidden OS (hOS) protection (declared in hos.h)
+ * @brief Hidden OS (hOS) protection
  */
 void hos_init(void);
 void hos_monitor_region(uintptr_t start, size_t size, bool exec, bool write);
@@ -225,7 +302,7 @@ void hos_hash_region(uintptr_t start, size_t size);
 void hos_verify_region(uintptr_t start, size_t size);
 
 /**
- * @brief Filesystem (swanFS) functions (declared in swanfs.h)
+ * @brief Filesystem (swanFS) functions
  */
 int sw_open(const char* path, int flags, int mode);
 ssize_t sw_read(int fd, void* buf, size_t count);
@@ -237,7 +314,7 @@ int sw_mount(const char* source, const char* target);
 int sw_unmount(const char* target);
 
 /**
- * @brief Graphical functions (declared in gfx.h)
+ * @brief Graphical functions
  */
 void gfx_init(void);
 void gfx_set_resolution(int width, int height, int bpp);
@@ -277,6 +354,10 @@ KERNEL_API extern bool fb_ready;
 KERNEL_API extern bool kbd_ready;
 KERNEL_API extern bool graphics_mode;
 KERNEL_API extern uintptr_t kernel_end;
-KERNEL_API extern uint16_t debug_port;
+
+/**
+ * @brief Global system resources
+ */
+KERNEL_API extern serial_port_t* debug_port;
 
 #endif /* _KERNEL_H */
