@@ -24,11 +24,31 @@ static const char* panic_titles[] = {
 static uint8_t original_vga_color = 0x07;
 
 // External declarations 
-extern void vga_set_color(enum vga_color fg, enum vga_color bg);
+extern void vga_set_color(int fg, int bg);
 extern void vga_clear_screen(void);
 extern void vga_set_cursor(int row, int col);
 extern uint8_t vga_color;
 extern void kprintf_set_mode(int mode);
+
+// VGA colors (must match vga.c definitions)
+enum {
+    VGA_BLACK = 0,
+    VGA_BLUE = 1,
+    VGA_GREEN = 2,
+    VGA_CYAN = 3,
+    VGA_RED = 4,
+    VGA_MAGENTA = 5,
+    VGA_BROWN = 6,
+    VGA_LIGHT_GREY = 7,
+    VGA_DARK_GREY = 8,
+    VGA_LIGHT_BLUE = 9,
+    VGA_LIGHT_GREEN = 10,
+    VGA_LIGHT_CYAN = 11,
+    VGA_LIGHT_RED = 12,
+    VGA_LIGHT_MAGENTA = 13,
+    VGA_LIGHT_BROWN = 14,
+    VGA_WHITE = 15
+};
 
 /**
  * @brief Print register state during panic
@@ -171,7 +191,7 @@ void panic(int type, const char* msg, const char* file, int line) {
     cli();
     
     // Set VGA to panic color
-    vga_set_color((enum vga_color)((color >> 4) & 0xF), (enum vga_color)(color & 0xF));
+    vga_set_color((color >> 4) & 0xF, color & 0xF);
     vga_clear_screen();
     vga_set_cursor(0, 0);
     
@@ -224,7 +244,7 @@ void hos_breach(const char* reason, uintptr_t addr) {
     cli();
     
     // Set VGA to HOS breach color
-    vga_set_color((enum vga_color)((COLOR_HOS_BREACH >> 4) & 0xF), (enum vga_color)(COLOR_HOS_BREACH & 0xF));
+    vga_set_color((COLOR_HOS_BREACH >> 4) & 0xF, COLOR_HOS_BREACH & 0xF);
     vga_clear_screen();
     vga_set_cursor(0, 0);
     
