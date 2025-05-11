@@ -1,40 +1,203 @@
 /**
  * @file panic.c
- * @brief Kernel panic implementation
+ * @brief Kernel panic and assertion functions
  */
 
 #include "../include/kernel.h"
-#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 // Panic types
-#define PANIC_NORMAL       0    // Normal panic (gray screen)
-#define PANIC_CRITICAL     1    // Critical panic (red screen)
-#define PANIC_HOS_BREACH   2    // Hidden OS breach (special red screen)
+#define PANIC_NORMAL      0   // Normal kernel panic (white on blue)
+#define PANIC_CRITICAL    1   // Critical failure (white on red)
+#define PANIC_HOS_BREACH  2   // Hidden OS security breach (yellow on red)
 
-// VGA colors
-#define VGA_COLOR_BLACK        0x0
-#define VGA_COLOR_BLUE         0x1
-#define VGA_COLOR_GREEN        0x2
-#define VGA_COLOR_CYAN         0x3
-#define VGA_COLOR_RED          0x4
-#define VGA_COLOR_MAGENTA      0x5
-#define VGA_COLOR_BROWN        0x6
-#define VGA_COLOR_LIGHT_GREY   0x7
-#define VGA_COLOR_DARK_GREY    0x8
-#define VGA_COLOR_LIGHT_BLUE   0x9
-#define VGA_COLOR_LIGHT_GREEN  0xA
-#define VGA_COLOR_LIGHT_CYAN   0xB
-#define VGA_COLOR_LIGHT_RED    0xC
-#define VGA_COLOR_LIGHT_MAGENTA 0xD
-#define VGA_COLOR_LIGHT_BROWN  0xE
-#define VGA_COLOR_WHITE        0xF
+// Screen dimensions for panic screen
+#define PANIC_COLS        80
+#define PANIC_ROWS        25
 
-// Forward declarations
-static void fill_screen(uint8_t color);
-static void draw_centered_text(const char* text, int y, uint8_t color);
-static void draw_text(const char* text, int x, int y, uint8_t color);
+// Panic screen colors
+#define PANIC_NORMAL_BG   0x1  // Blue background
+#define PANIC_CRITICAL_BG 0x4  // Red background
+#define PANIC_HOS_BG      0x4  // Red background
+#define PANIC_NORMAL_FG   0xF  // White text
+#define PANIC_HOS_FG      0xE  // Yellow text
+
+// Strings for panic screens
+static const char* panic_header = " dsOS Kernel Panic ";
+static const char* hos_breach_header = " dsOS Security Alert: Hidden OS Protection Breach ";
+static const char* panic_footer = " System Halted ";
+static const char* reboot_message = "Press Alt+Ctrl+Del to restart";
+
+// HOS breach types
+static const char* hos_breach_types[] = {
+    "Unknown Violation",
+    "Read Violation",
+    "Write Violation",
+    "Execute Violation",
+    "Hash Verification Failure",
+    "Disappearance Detected"
+};
+
+// Registers for panic screen
+typedef struct {
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rbp, rsp;
+    uint64_t r8, r9, r10, r11;
+    uint64_t r12, r13, r14, r15;
+    uint64_t rip, rflags;
+    uint64_t cr0, cr2, cr3, cr4;
+} PACKED panic_regs_t;
+
+// Get current register values
+static void get_registers(panic_regs_t* regs) {
+    __asm__ volatile(
+        "mov %%rax, %0\n"
+        "mov %%rbx, %1\n"
+        "mov %%rcx, %2\n"
+        "mov %%rdx, %3\n"
+        "mov %%rsi, %4\n"
+        "mov %%rdi, %5\n"
+        "mov %%rbp, %6\n"
+        "mov %%rsp, %7\n"
+        "mov %%r8, %8\n"
+        "mov %%r9, %9\n"
+        "mov %%r10, %10\n"
+        "mov %%r11, %11\n"
+        "mov %%r12, %12\n"
+        "mov %%r13, %13\n"
+        "mov %%r14, %14\n"
+        "mov %%r15, %15\n"
+        "lea 0(%%rip), %%rax\n"
+        "mov %%rax, %16\n"
+        "pushfq\n"
+        "pop %%rax\n"
+        "mov %%rax, %17\n"
+        "mov %%cr0, %%rax\n"
+        "mov %%rax, %18\n"
+        "mov %%cr2, %%rax\n"
+        "mov %%rax, %19\n"
+        "mov %%cr3, %%rax\n"
+        "mov %%rax, %20\n"
+        "mov %%cr4, %%rax\n"
+        "mov %%rax, %21\n"
+        : "=m" (regs->rax), "=m" (regs->rbx), "=m" (regs->rcx), "=m" (regs->rdx),
+          "=m" (regs->rsi), "=m" (regs->rdi), "=m" (regs->rbp), "=m" (regs->rsp),
+          "=m" (regs->r8), "=m" (regs->r9), "=m" (regs->r10), "=m" (regs->r11),
+          "=m" (regs->r12), "=m" (regs->r13), "=m" (regs->r14), "=m" (regs->r15),
+          "=m" (regs->rip), "=m" (regs->rflags), "=m" (regs->cr0), "=m" (regs->cr2),
+          "=m" (regs->cr3), "=m" (regs->cr4)
+        :
+        : "rax", "memory"
+    );
+    
+    // Adjust RSP - it was modified by our function call
+    regs->rsp += 8 * 8; // Approximate adjustment
+}
+
+/**
+ * @brief Draw a box on the screen using text mode characters
+ * 
+ * @param x X position
+ * @param y Y position
+ * @param width Box width
+ * @param height Box height
+ * @param color Color attribute
+ */
+static void draw_box(int x, int y, int width, int height, uint8_t color) {
+    int i, j;
+    
+    // Draw top border
+    vga_putchar_at(0xC9, x, y, color); // ┌
+    for (i = 1; i < width - 1; i++) {
+        vga_putchar_at(0xCD, x + i, y, color); // ─
+    }
+    vga_putchar_at(0xBB, x + width - 1, y, color); // ┐
+    
+    // Draw sides
+    for (i = 1; i < height - 1; i++) {
+        vga_putchar_at(0xBA, x, y + i, color); // │
+        for (j = 1; j < width - 1; j++) {
+            vga_putchar_at(' ', x + j, y + i, color); // space
+        }
+        vga_putchar_at(0xBA, x + width - 1, y + i, color); // │
+    }
+    
+    // Draw bottom border
+    vga_putchar_at(0xC8, x, y + height - 1, color); // └
+    for (i = 1; i < width - 1; i++) {
+        vga_putchar_at(0xCD, x + i, y + height - 1, color); // ─
+    }
+    vga_putchar_at(0xBC, x + width - 1, y + height - 1, color); // ┘
+}
+
+/**
+ * @brief Print a centered string
+ * 
+ * @param str String to print
+ * @param y Y position
+ * @param color Color attribute
+ */
+static void print_centered(const char* str, int y, uint8_t color) {
+    int len = strlen(str);
+    int x = (PANIC_COLS - len) / 2;
+    if (x < 0) x = 0;
+    
+    vga_print_at(str, x, y, color);
+}
+
+/**
+ * @brief Print register values
+ * 
+ * @param regs Register structure
+ * @param x Starting X position
+ * @param y Starting Y position
+ * @param color Color attribute
+ */
+static void print_registers(panic_regs_t* regs, int x, int y, uint8_t color) {
+    char buf[64];
+    
+    vga_print_at("CPU Registers:", x, y++, color);
+    y++;
+    
+    snprintf(buf, sizeof(buf), "RAX: %016llX  RBX: %016llX", regs->rax, regs->rbx);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "RCX: %016llX  RDX: %016llX", regs->rcx, regs->rdx);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "RSI: %016llX  RDI: %016llX", regs->rsi, regs->rdi);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "RBP: %016llX  RSP: %016llX", regs->rbp, regs->rsp);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "R8:  %016llX  R9:  %016llX", regs->r8, regs->r9);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "R10: %016llX  R11: %016llX", regs->r10, regs->r11);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "R12: %016llX  R13: %016llX", regs->r12, regs->r13);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "R14: %016llX  R15: %016llX", regs->r14, regs->r15);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "RIP: %016llX  RFLAGS: %016llX", regs->rip, regs->rflags);
+    vga_print_at(buf, x, y++, color);
+    
+    y++;
+    vga_print_at("Control Registers:", x, y++, color);
+    y++;
+    
+    snprintf(buf, sizeof(buf), "CR0: %016llX  CR2: %016llX", regs->cr0, regs->cr2);
+    vga_print_at(buf, x, y++, color);
+    
+    snprintf(buf, sizeof(buf), "CR3: %016llX  CR4: %016llX", regs->cr3, regs->cr4);
+    vga_print_at(buf, x, y++, color);
+}
 
 /**
  * @brief Kernel panic handler
@@ -44,168 +207,146 @@ static void draw_text(const char* text, int x, int y, uint8_t color);
  * @param file Source file where panic occurred
  * @param line Line number where panic occurred
  */
-void panic(int type, const char* message, const char* file, int line) {
+NORETURN void panic(int type, const char* message, const char* file, int line) {
+    uint8_t bg_color, fg_color;
+    char buf[256];
+    panic_regs_t regs;
+    
     // Disable interrupts
     cli();
     
-    // Set VGA output only
-    kprintf_set_mode(2);
-    
-    // Prepare screen based on panic type
+    // Choose colors based on panic type
     switch (type) {
         case PANIC_CRITICAL:
-            fill_screen(VGA_COLOR_RED);
-            draw_centered_text("CRITICAL KERNEL ERROR", 5, VGA_COLOR_WHITE);
+            bg_color = PANIC_CRITICAL_BG;
+            fg_color = PANIC_NORMAL_FG;
             break;
             
         case PANIC_HOS_BREACH:
-            fill_screen(VGA_COLOR_RED);
-            draw_centered_text("HIDDEN OS SECURITY BREACH", 5, VGA_COLOR_WHITE);
+            bg_color = PANIC_HOS_BG;
+            fg_color = PANIC_HOS_FG;
             break;
             
         case PANIC_NORMAL:
         default:
-            fill_screen(VGA_COLOR_LIGHT_GREY);
-            draw_centered_text("KERNEL PANIC", 5, VGA_COLOR_BLACK);
+            bg_color = PANIC_NORMAL_BG;
+            fg_color = PANIC_NORMAL_FG;
             break;
     }
     
-    // Display panic information
-    char buf[80];
+    // Set colors for the panic screen
+    uint8_t color = vga_make_color(fg_color, bg_color);
+    uint8_t header_color = vga_make_color(bg_color, fg_color);
     
-    draw_centered_text(message, 8, (type == PANIC_NORMAL) ? VGA_COLOR_BLACK : VGA_COLOR_WHITE);
+    // Clear the screen with the panic color
+    vga_clear();
+    vga_set_color(fg_color, bg_color);
     
-    snprintf(buf, sizeof(buf), "Source: %s:%d", file, line);
-    draw_centered_text(buf, 10, (type == PANIC_NORMAL) ? VGA_COLOR_BLACK : VGA_COLOR_WHITE);
+    // Get register values
+    get_registers(&regs);
     
-    // Output to serial as well
-    kprintf_set_mode(1);
-    kprintf("\n\n*** KERNEL PANIC ***\n");
-    kprintf("Message: %s\n", message);
-    kprintf("Source: %s:%d\n", file, line);
+    // Draw panic screen
+    if (type == PANIC_HOS_BREACH) {
+        print_centered(hos_breach_header, 1, header_color);
+    } else {
+        print_centered(panic_header, 1, header_color);
+    }
     
-    // Halt the system
+    // Print the panic message
+    print_centered(message, 3, color);
+    
+    // Print the source location
+    snprintf(buf, sizeof(buf), "at %s:%d", file, line);
+    print_centered(buf, 4, color);
+    
+    // Print registers
+    print_registers(&regs, 2, 6, color);
+    
+    // Print footer
+    print_centered(panic_footer, PANIC_ROWS - 3, header_color);
+    print_centered(reboot_message, PANIC_ROWS - 2, color);
+    
+    // Output to serial port if available
+    if (serial_is_initialized(debug_port)) {
+        serial_write_str(debug_port, "\n\n***** KERNEL PANIC *****\n");
+        serial_write_str(debug_port, message);
+        serial_write_str(debug_port, "\nat ");
+        serial_write_str(debug_port, file);
+        serial_write_str(debug_port, ":");
+        
+        snprintf(buf, sizeof(buf), "%d\n", line);
+        serial_write_str(debug_port, buf);
+        
+        // Register dump
+        serial_write_str(debug_port, "\nRegister dump:\n");
+        snprintf(buf, sizeof(buf), "RAX: %016llX  RBX: %016llX\n", regs.rax, regs.rbx);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "RCX: %016llX  RDX: %016llX\n", regs.rcx, regs.rdx);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "RSI: %016llX  RDI: %016llX\n", regs.rsi, regs.rdi);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "RBP: %016llX  RSP: %016llX\n", regs.rbp, regs.rsp);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "RIP: %016llX  RFLAGS: %016llX\n", regs.rip, regs.rflags);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "CR0: %016llX  CR2: %016llX\n", regs.cr0, regs.cr2);
+        serial_write_str(debug_port, buf);
+        snprintf(buf, sizeof(buf), "CR3: %016llX  CR4: %016llX\n", regs.cr3, regs.cr4);
+        serial_write_str(debug_port, buf);
+    }
+    
+    // Halt the CPU
     halt();
 }
 
 /**
- * @brief Assert function implementation
+ * @brief Hidden OS protection breach handler
+ * 
+ * @param breach_type Type of breach
+ * @param address Memory address where breach occurred
+ * @param expected Expected value (for hash verification)
+ * @param actual Actual value
+ */
+NORETURN void hos_breach(int breach_type, uintptr_t address, uint64_t expected, uint64_t actual) {
+    char message[256];
+    
+    if (breach_type < 0 || breach_type >= (int)ARRAY_SIZE(hos_breach_types)) {
+        breach_type = 0; // Unknown violation
+    }
+    
+    // Format the breach message
+    snprintf(message, sizeof(message), "HOS Protection: %s at 0x%016llX", 
+             hos_breach_types[breach_type], (unsigned long long)address);
+    
+    // Call the panic handler with the breach message
+    panic(PANIC_HOS_BREACH, message, "(kernel)", 0);
+}
+
+/**
+ * @brief Assertion function
  * 
  * @param condition Condition to check
- * @param message Message if condition fails
- * @param file Source file
- * @param line Line number
+ * @param message Message to show if assertion fails
+ * @param file Source file where assertion is located
+ * @param line Line number where assertion is located
  */
 void kassert_func(bool condition, const char* message, const char* file, int line) {
     if (!condition) {
-        panic(PANIC_NORMAL, message, file, line);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "Assertion failed: %s", message);
+        panic(PANIC_NORMAL, buf, file, line);
     }
 }
 
 /**
- * @brief Hidden OS breach handler
- * 
- * @param breach_type Type of breach
- * @param address Address that was violated
- * @param expected Expected value
- * @param actual Actual value
+ * @brief Halt the system and stop all execution
  */
-void hos_breach(int breach_type, uintptr_t address, uint64_t expected, uint64_t actual) {
-    char message[80];
-    
-    switch (breach_type) {
-        case 1:
-            snprintf(message, sizeof(message), "Read violation at 0x%lx", address);
-            break;
-        case 2:
-            snprintf(message, sizeof(message), "Write violation at 0x%lx", address);
-            break;
-        case 3:
-            snprintf(message, sizeof(message), "Exec violation at 0x%lx", address);
-            break;
-        case 4:
-            snprintf(message, sizeof(message), "Hash mismatch at 0x%lx", address);
-            break;
-        case 5:
-            snprintf(message, sizeof(message), "Missing block at 0x%lx", address);
-            break;
-        default:
-            snprintf(message, sizeof(message), "Unknown violation at 0x%lx", address);
-            break;
-    }
-    
-    panic(PANIC_HOS_BREACH, message, __FILE__, __LINE__);
-}
-
-/**
- * @brief Halt the system
- */
-void halt(void) {
-    // Output message to serial port
-    kprintf("System halted.\n");
-    
-    // Disable interrupts and enter infinite loop
+NORETURN void halt(void) {
+    // Disable interrupts if not already disabled
     cli();
+    
+    // Infinite loop with CPU halt
     while (1) {
-        // Wait for the world to end
         __asm__ volatile("hlt");
-    }
-}
-
-/**
- * @brief Fill the screen with a color
- * 
- * @param color Color to fill with
- */
-static void fill_screen(uint8_t color) {
-    // Assuming vga_clear(color) exists
-    // For now, we'll just do it directly
-    uint16_t* vga_buffer = (uint16_t*)0xB8000;
-    uint16_t value = (color << 8) | ' '; // Space character with color
-    
-    for (int i = 0; i < 25 * 80; i++) {
-        vga_buffer[i] = value;
-    }
-}
-
-/**
- * @brief Draw centered text on screen
- * 
- * @param text Text to draw
- * @param y Y position
- * @param color Text color
- */
-static void draw_centered_text(const char* text, int y, uint8_t color) {
-    size_t len = strlen(text);
-    int x = (80 - len) / 2;
-    if (x < 0) x = 0;
-    
-    draw_text(text, x, y, color);
-}
-
-/**
- * @brief Draw text at a specific position
- * 
- * @param text Text to draw
- * @param x X position
- * @param y Y position
- * @param color Text color
- */
-static void draw_text(const char* text, int x, int y, uint8_t color) {
-    uint16_t* vga_buffer = (uint16_t*)0xB8000;
-    size_t len = strlen(text);
-    
-    // Ensure coordinates are within bounds
-    if (x < 0) x = 0;
-    if (x >= 80) x = 79;
-    if (y < 0) y = 0;
-    if (y >= 25) y = 24;
-    
-    // Calculate starting position
-    uint16_t* pos = vga_buffer + (y * 80 + x);
-    
-    // Draw text
-    for (size_t i = 0; i < len && (x + i) < 80; i++) {
-        pos[i] = (color << 8) | text[i];
     }
 }
