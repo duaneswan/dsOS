@@ -128,6 +128,19 @@ void panic(int type, const char* msg, const char* file, int line);
 void hos_breach(const char* reason, uintptr_t addr);
 
 /**
+ * @brief Interrupt handler type
+ */
+typedef void (*interrupt_handler_t)(void);
+
+/**
+ * @brief Register an interrupt handler
+ * 
+ * @param num Interrupt number
+ * @param handler Handler function
+ */
+void register_interrupt_handler(uint8_t num, interrupt_handler_t handler);
+
+/**
  * @brief Kernel entry point
  */
 void kernel_main(uintptr_t mb_info);

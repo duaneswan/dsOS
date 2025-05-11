@@ -98,8 +98,8 @@ void timer_init(void) {
     outb(PIT_CHANNEL0, (reload_value >> 8) & 0xFF);
     
     // Register the timer handler for IRQ0
-    extern void register_interrupt_handler(uint8_t, void*);
-    register_interrupt_handler(32, timer_handler);
+    extern void register_interrupt_handler(uint8_t, interrupt_handler_t);
+    register_interrupt_handler(32, (interrupt_handler_t)timer_handler);
     
     // Unmask (enable) IRQ0 in the PIC
     extern void pic_unmask_irq(uint8_t);
