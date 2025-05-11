@@ -301,7 +301,7 @@ void pic_init(void);
 void pic_send_eoi(uint8_t irq);
 void pic_mask_irq(uint8_t irq);
 void pic_unmask_irq(uint8_t irq);
-void timer_init(void);
+void timer_init(uint32_t frequency);
 uint64_t timer_get_ticks(void);
 uint64_t timer_get_ms(void);
 void timer_wait_ms(uint32_t ms);
