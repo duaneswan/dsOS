@@ -1,211 +1,279 @@
 /**
  * @file panic.c
- * @brief Kernel panic and assertion handlers
+ * @brief Kernel panic and assertion functions
  */
 
 #include "../include/kernel.h"
-#include <stdbool.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
-// Whether we're currently in a panic state
-static bool is_panicking = false;
+// Flag to prevent recursive panics
+static volatile bool in_panic = false;
 
-/**
- * @brief Print register values during a panic or breach
- * 
- * @param regs Register state at the time of the panic
- */
-static void print_registers(const registers_t* regs) {
-    if (regs == NULL) {
-        kprintf("No register state available\n");
-        return;
-    }
-    
-    kprintf("RAX: 0x%016lx  RBX: 0x%016lx  RCX: 0x%016lx\n", regs->rax, regs->rbx, regs->rcx);
-    kprintf("RDX: 0x%016lx  RSI: 0x%016lx  RDI: 0x%016lx\n", regs->rdx, regs->rsi, regs->rdi);
-    kprintf("RBP: 0x%016lx  RSP: 0x%016lx  R8:  0x%016lx\n", regs->rbp, regs->rsp, regs->r8);
-    kprintf("R9:  0x%016lx  R10: 0x%016lx  R11: 0x%016lx\n", regs->r9, regs->r10, regs->r11);
-    kprintf("R12: 0x%016lx  R13: 0x%016lx  R14: 0x%016lx\n", regs->r12, regs->r13, regs->r14);
-    kprintf("R15: 0x%016lx  RIP: 0x%016lx  RFLAGS: 0x%016lx\n", regs->r15, regs->rip, regs->rflags);
-    kprintf("CS:  0x%04x  DS: 0x%04x  SS: 0x%04x  ES: 0x%04x  FS: 0x%04x  GS: 0x%04x\n", 
-            regs->cs, regs->ds, regs->ss, regs->es, regs->fs, regs->gs);
-    
-    // Print the instruction bytes at RIP if we can
-    if (regs->rip != 0 && regs->rip < 0xFFFFFFFF80000000) {
-        kprintf("Instruction bytes at RIP: ");
-        uint8_t* code = (uint8_t*)regs->rip;
-        for (int i = 0; i < 8; i++) {
-            kprintf("%02x ", code[i]);
-        }
-        kprintf("\n");
-    }
-}
+// Text colors for panic and breach screens
+#define PANIC_TEXT_COLOR  0xFFFFFF   // White
+#define PANIC_BG_COLOR    0x0000AA   // Blue
+#define BREACH_TEXT_COLOR 0xFFFFFF   // White
+#define BREACH_BG_COLOR   0xAA0000   // Red
+
+// Register dump structure
+typedef struct {
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rbp, rsp;
+    uint64_t r8, r9, r10, r11;
+    uint64_t r12, r13, r14, r15;
+    uint64_t rip, rflags;
+    uint64_t cs, ds, es, fs, gs, ss;
+    uint64_t cr0, cr2, cr3, cr4;
+} registers_t;
+
+// Forward declarations
+static void dump_registers(const registers_t* regs);
+static void print_backtrace(void);
+static void halt_system(void);
+static void fill_screen(uint32_t color);
 
 /**
- * @brief Print the call stack trace during panic
+ * @brief Kernel panic - fatal error handler
  * 
- * @param max_frames Maximum number of stack frames to print
- */
-static void print_stacktrace(int max_frames) {
-    // Get the current RBP (frame pointer)
-    uint64_t* rbp;
-    __asm__ volatile("mov %%rbp, %0" : "=r"(rbp));
-    
-    kprintf("Stack trace:\n");
-    
-    // Each stack frame contains:
-    // [rbp] -> previous rbp
-    // [rbp+8] -> return address
-    for (int frame = 0; frame < max_frames; frame++) {
-        // Check if rbp is valid (aligned and within a reasonable range)
-        if (rbp == NULL || (uint64_t)rbp < 0x1000 || (uint64_t)rbp & 0x7) {
-            break;
-        }
-        
-        uint64_t rip = *(rbp + 1); // Return address
-        
-        // If the return address seems invalid, stop
-        if (rip == 0 || rip < 0x1000) {
-            break;
-        }
-        
-        kprintf("  [%d] 0x%016lx\n", frame, rip);
-        
-        // Move to the previous frame
-        rbp = (uint64_t*)(*rbp);
-    }
-}
-
-/**
- * @brief Kernel panic handler - displays error and halts the system
- * 
- * @param file Source file where panic was called
- * @param line Line number where panic was called
- * @param regs Register state at the time of the panic (may be NULL)
+ * @param file Source file where panic occurred
+ * @param line Line number where panic occurred
  * @param fmt Format string for panic message
  * @param ... Additional arguments for format string
  */
-__attribute__((noreturn)) void panic(const char* file, int line, registers_t* regs, const char* fmt, ...) {
-    // Prevent recursive panics
-    if (is_panicking) {
-        kprintf("\nNested panic detected! Halting immediately.\n");
-        halt();
+void panic(const char* file, int line, const char* fmt, ...) {
+    // Avoid recursive panics
+    if (in_panic) {
+        kprintf("\nRecursive panic detected!\n");
+        halt_system();
     }
-    
-    is_panicking = true;
+    in_panic = true;
     
     // Disable interrupts
     disable_interrupts();
     
-    // Clear the screen and set a black background with white text
-    vga_clear_screen(VGA_COLOR_BLACK);
-    vga_set_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+    // Switch to console output mode
+    kprintf_set_mode(PRINTF_MODE_BOTH);
     
-    // Print the panic header
+    // If we have a framebuffer, draw blue screen
+    if (fb_ready && framebuffer_base != NULL) {
+        fill_screen(PANIC_BG_COLOR);
+    }
+    
+    // Print panic header
     kprintf("\n\n");
-    kprintf("================================================================================\n");
-    kprintf("                               KERNEL PANIC                                     \n");
-    kprintf("================================================================================\n");
+    kprintf("********************************\n");
+    kprintf("*** KERNEL PANIC - NOT SYNCING\n");
+    kprintf("********************************\n\n");
     
-    // Print the panic reason
+    // Print file and line information
+    kprintf("At %s:%d\n\n", file, line);
+    
+    // Print panic message
     va_list args;
     va_start(args, fmt);
-    kprintf("Reason: ");
     vkprintf(fmt, args);
     va_end(args);
-    kprintf("\n");
+    kprintf("\n\n");
     
-    // Print source location
-    kprintf("File: %s, Line: %d\n", file, line);
+    // Print backtrace
+    print_backtrace();
     
-    // Print the timestamp if available
-    if (timer_get_ms != NULL) {
-        kprintf("Uptime: %lu ms\n", timer_get_ms());
-    }
-    
-    kprintf("--------------------------------------------------------------------------------\n");
-    
-    // Print register state if available
-    print_registers(regs);
-    
-    // Print stack trace
-    print_stacktrace(10);
-    
-    kprintf("--------------------------------------------------------------------------------\n");
-    kprintf("System halted.\n");
-    
-    // Also output to debug serial port if available
-    if (debug_port != NULL && serial_is_initialized(debug_port)) {
-        va_list args;
-        va_start(args, fmt);
-        
-        char buffer[1024];
-        vsnprintf(buffer, sizeof(buffer), fmt, args);
-        
-        serial_printf(debug_port, "\n\nKERNEL PANIC: %s\n", buffer);
-        serial_printf(debug_port, "File: %s, Line: %d\n", file, line);
-        serial_printf(debug_port, "System halted.\n");
-        
-        va_end(args);
-    }
-    
-    // Never return
-    halt();
+    // Halt the system
+    kprintf("\nSystem halted.\n");
+    halt_system();
 }
 
 /**
- * @brief Assertion failure handler - calls panic() for failed assertions
+ * @brief Assert a condition, panic if condition is false
  * 
- * @param file Source file where assertion failed
- * @param line Line number where assertion failed
- * @param expr String representation of the failed expression
+ * @param condition Condition to assert
+ * @param file Source file where assertion occurred
+ * @param line Line number where assertion occurred
+ * @param fmt Format string for assertion message
+ * @param ... Additional arguments for format string
  */
-void assertion_failed(const char* file, int line, const char* expr) {
-    panic(file, line, NULL, "Assertion failed: %s", expr);
-}
-
-/**
- * @brief Hidden OS breach handler - displays warning and halts system
- * 
- * @param type Type of breach (read, write, execute, disappear)
- * @param address Memory address where breach occurred
- * @param regs Register state at time of breach
- */
-__attribute__((noreturn)) void hos_breach(const char* type, uint64_t address, registers_t* regs) {
+void kassertf(bool condition, const char* file, int line, const char* fmt, ...) {
+    if (condition) {
+        return;  // Assertion passed
+    }
+    
+    // Avoid recursive panics
+    if (in_panic) {
+        kprintf("\nRecursive panic detected during assertion!\n");
+        halt_system();
+    }
+    in_panic = true;
+    
     // Disable interrupts
     disable_interrupts();
     
-    // Set screen to red with white text
-    vga_clear_screen(VGA_COLOR_RED);
-    vga_set_color(VGA_COLOR_WHITE, VGA_COLOR_RED);
+    // Switch to console output mode
+    kprintf_set_mode(PRINTF_MODE_BOTH);
     
-    // Print the breach warning
-    kprintf("\n\n");
-    kprintf("================================================================================\n");
-    kprintf("                            HIDDEN OS BREACH DETECTED                           \n");
-    kprintf("================================================================================\n");
-    
-    kprintf("Breach type: %s\n", type);
-    kprintf("Address: 0x%016lx\n", address);
-    
-    kprintf("--------------------------------------------------------------------------------\n");
-    
-    // Print register state
-    print_registers(regs);
-    
-    // Print stack trace
-    print_stacktrace(10);
-    
-    kprintf("--------------------------------------------------------------------------------\n");
-    kprintf("System halted for security.\n");
-    
-    // Also output to debug serial port if available
-    if (debug_port != NULL && serial_is_initialized(debug_port)) {
-        serial_printf(debug_port, "\n\nHIDDEN OS BREACH DETECTED: %s at 0x%016lx\n", 
-                     type, address);
-        serial_printf(debug_port, "System halted for security.\n");
+    // If we have a framebuffer, draw blue screen
+    if (fb_ready && framebuffer_base != NULL) {
+        fill_screen(PANIC_BG_COLOR);
     }
     
-    // Never return
-    halt();
+    // Print assertion header
+    kprintf("\n\n");
+    kprintf("********************************\n");
+    kprintf("*** ASSERTION FAILED\n");
+    kprintf("********************************\n\n");
+    
+    // Print file and line information
+    kprintf("At %s:%d\n\n", file, line);
+    
+    // Print assertion message
+    va_list args;
+    va_start(args, fmt);
+    vkprintf(fmt, args);
+    va_end(args);
+    kprintf("\n\n");
+    
+    // Print backtrace
+    print_backtrace();
+    
+    // Halt the system
+    kprintf("\nSystem halted.\n");
+    halt_system();
+}
+
+/**
+ * @brief Hidden OS security breach handler
+ * 
+ * @param file Source file where breach was detected
+ * @param line Line number where breach was detected
+ * @param reason Reason for the breach
+ * @param regs Register state at the time of breach
+ */
+void hos_breach(const char* file, int line, const char* reason, void* regs) {
+    // Avoid recursive breaches
+    if (in_panic) {
+        kprintf("\nRecursive breach handler invoked!\n");
+        halt_system();
+    }
+    in_panic = true;
+    
+    // Disable interrupts
+    disable_interrupts();
+    
+    // Switch to console output mode
+    kprintf_set_mode(PRINTF_MODE_BOTH);
+    
+    // If we have a framebuffer, draw red screen
+    if (fb_ready && framebuffer_base != NULL) {
+        fill_screen(BREACH_BG_COLOR);
+    }
+    
+    // Print breach header
+    kprintf("\n\n");
+    kprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    kprintf("!!! HIDDEN OS SECURITY BREACH DETECTED\n");
+    kprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
+    
+    // Print file, line, and reason
+    kprintf("At %s:%d\n", file, line);
+    kprintf("Reason: %s\n\n", reason);
+    
+    // Dump registers if available
+    if (regs != NULL) {
+        dump_registers((registers_t*)regs);
+    }
+    
+    // Print backtrace
+    print_backtrace();
+    
+    // Halt the system
+    kprintf("\nSystem halted for security reasons.\n");
+    halt_system();
+}
+
+/**
+ * @brief Print a backtrace of the call stack
+ * 
+ * Note: This is a simplified implementation that may not work in all cases
+ */
+static void print_backtrace(void) {
+    kprintf("Call trace:\n");
+    
+    // Get current frame pointer
+    void** ebp;
+    asm volatile("mov %%rbp, %0" : "=r"(ebp) : :);
+    
+    // Walk the stack
+    for (int frame = 0; frame < 10 && ebp != NULL; frame++) {
+        void* return_address = ebp[1];
+        if (return_address == NULL) {
+            break;
+        }
+        
+        kprintf(" [%d] %p\n", frame, return_address);
+        
+        // Move to next frame
+        ebp = (void**)ebp[0];
+        if (ebp == NULL || (uintptr_t)ebp < 0x1000 || (uintptr_t)ebp > 0xFFFFFFFFFFFFFF00) {
+            // Invalid frame pointer
+            break;
+        }
+    }
+    
+    kprintf("\n");
+}
+
+/**
+ * @brief Dump register values
+ * 
+ * @param regs Register values to dump
+ */
+static void dump_registers(const registers_t* regs) {
+    kprintf("Register dump:\n");
+    kprintf(" RAX: %016llx  RBX: %016llx\n", regs->rax, regs->rbx);
+    kprintf(" RCX: %016llx  RDX: %016llx\n", regs->rcx, regs->rdx);
+    kprintf(" RSI: %016llx  RDI: %016llx\n", regs->rsi, regs->rdi);
+    kprintf(" RBP: %016llx  RSP: %016llx\n", regs->rbp, regs->rsp);
+    kprintf(" R8:  %016llx  R9:  %016llx\n", regs->r8, regs->r9);
+    kprintf(" R10: %016llx  R11: %016llx\n", regs->r10, regs->r11);
+    kprintf(" R12: %016llx  R13: %016llx\n", regs->r12, regs->r13);
+    kprintf(" R14: %016llx  R15: %016llx\n", regs->r14, regs->r15);
+    kprintf(" RIP: %016llx  RFLAGS: %016llx\n", regs->rip, regs->rflags);
+    kprintf(" CS: %04llx  DS: %04llx  ES: %04llx\n", regs->cs, regs->ds, regs->es);
+    kprintf(" FS: %04llx  GS: %04llx  SS: %04llx\n", regs->fs, regs->gs, regs->ss);
+    kprintf(" CR0: %016llx  CR2: %016llx\n", regs->cr0, regs->cr2);
+    kprintf(" CR3: %016llx  CR4: %016llx\n\n", regs->cr3, regs->cr4);
+}
+
+/**
+ * @brief Fill the framebuffer with a solid color
+ * 
+ * @param color Color to fill the screen with (RGB)
+ */
+static void fill_screen(uint32_t color) {
+    if (!fb_ready || framebuffer_base == NULL) {
+        return;
+    }
+    
+    uint32_t* fb = (uint32_t*)framebuffer_base;
+    for (uint32_t i = 0; i < framebuffer_width * framebuffer_height; i++) {
+        fb[i] = color;
+    }
+    
+    // Reset terminal position
+    terminal_row = 0;
+    terminal_column = 0;
+}
+
+/**
+ * @brief Halt the system
+ * 
+ * This function will never return
+ */
+static void halt_system(void) {
+    while (1) {
+        // Disable interrupts and halt CPU
+        asm volatile("cli; hlt");
+        
+        // If execution continues (e.g., due to NMI), keep halting
+    }
 }
