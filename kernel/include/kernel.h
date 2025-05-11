@@ -254,7 +254,7 @@ char* strdup(const char* s);
 /**
  * @brief Console/print functions (declared in printf.h)
  */
-void kprintf(const char* fmt, ...);
+int kprintf(const char* fmt, ...);
 int vkprintf(const char* fmt, va_list args);
 int snprintf(char* buffer, size_t size, const char* fmt, ...);
 int vsnprintf(char* buffer, size_t size, const char* fmt, va_list args);
