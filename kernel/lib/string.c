@@ -1,9 +1,10 @@
 /**
  * @file string.c
- * @brief String manipulation functions for the kernel
+ * @brief String manipulation functions
  */
 
 #include "../include/kernel.h"
+#include <stdint.h>
 #include <stddef.h>
 
 /**
@@ -12,53 +13,52 @@
  * @param dest Destination memory area
  * @param src Source memory area
  * @param n Number of bytes to copy
- * @return void* Pointer to destination memory area
+ * @return Pointer to destination memory area
  */
 void* memcpy(void* dest, const void* src, size_t n) {
-    unsigned char* d = (unsigned char*)dest;
-    const unsigned char* s = (const unsigned char*)src;
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
     
-    // Handle the case of overlapping memory areas
-    if (d == s || n == 0) {
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
         return dest;
     }
     
     // Copy byte by byte
-    while (n--) {
-        *d++ = *s++;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
     }
     
     return dest;
 }
 
 /**
- * @brief Copy memory area with possible overlap
+ * @brief Copy memory area, handling overlap
  * 
  * @param dest Destination memory area
  * @param src Source memory area
  * @param n Number of bytes to copy
- * @return void* Pointer to destination memory area
+ * @return Pointer to destination memory area
  */
 void* memmove(void* dest, const void* src, size_t n) {
-    unsigned char* d = (unsigned char*)dest;
-    const unsigned char* s = (const unsigned char*)src;
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
     
-    // Handle the case of overlapping memory areas
-    if (d == s || n == 0) {
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
         return dest;
     }
     
-    // If dest is after src, copy backwards to avoid overlap issues
-    if (d > s && d < s + n) {
-        d += n - 1;
-        s += n - 1;
-        while (n--) {
-            *d-- = *s--;
+    // If destination is before source, copy forward
+    if (d < s) {
+        for (size_t i = 0; i < n; i++) {
+            d[i] = s[i];
         }
-    } else {
-        // Otherwise, copy forwards
-        while (n--) {
-            *d++ = *s++;
+    }
+    // If destination is after source, copy backward to handle overlap
+    else if (d > s) {
+        for (size_t i = n; i > 0; i--) {
+            d[i - 1] = s[i - 1];
         }
     }
     
@@ -71,55 +71,71 @@ void* memmove(void* dest, const void* src, size_t n) {
  * @param s Memory area to fill
  * @param c Byte to fill with
  * @param n Number of bytes to fill
- * @return void* Pointer to memory area
+ * @return Pointer to memory area
  */
 void* memset(void* s, int c, size_t n) {
-    unsigned char* p = (unsigned char*)s;
+    uint8_t* p = (uint8_t*)s;
     
-    while (n--) {
-        *p++ = (unsigned char)c;
+    // Check for NULL pointer
+    if (s == NULL) {
+        return s;
+    }
+    
+    // Fill byte by byte
+    for (size_t i = 0; i < n; i++) {
+        p[i] = (uint8_t)c;
     }
     
     return s;
 }
 
 /**
- * @brief Compare two memory areas
+ * @brief Compare memory areas
  * 
  * @param s1 First memory area
  * @param s2 Second memory area
  * @param n Number of bytes to compare
- * @return int 0 if equal, <0 if s1<s2, >0 if s1>s2
+ * @return < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
  */
 int memcmp(const void* s1, const void* s2, size_t n) {
-    const unsigned char* p1 = (const unsigned char*)s1;
-    const unsigned char* p2 = (const unsigned char*)s2;
+    const uint8_t* p1 = (const uint8_t*)s1;
+    const uint8_t* p2 = (const uint8_t*)s2;
     
-    while (n--) {
-        if (*p1 != *p2) {
-            return *p1 - *p2;
+    // Check for NULL pointers
+    if (s1 == NULL || s2 == NULL) {
+        return (s1 == s2) ? 0 : ((s1 == NULL) ? -1 : 1);
+    }
+    
+    // Compare byte by byte
+    for (size_t i = 0; i < n; i++) {
+        if (p1[i] != p2[i]) {
+            return p1[i] - p2[i];
         }
-        p1++;
-        p2++;
     }
     
     return 0;
 }
 
 /**
- * @brief Get the length of a string
+ * @brief Calculate the length of a string
  * 
  * @param s String to measure
- * @return size_t Number of characters before the terminating null byte
+ * @return Length of the string
  */
 size_t strlen(const char* s) {
     const char* p = s;
     
+    // Check for NULL pointer
+    if (s == NULL) {
+        return 0;
+    }
+    
+    // Count characters until null terminator
     while (*p) {
         p++;
     }
     
-    return p - s;
+    return (size_t)(p - s);
 }
 
 /**
@@ -127,99 +143,124 @@ size_t strlen(const char* s) {
  * 
  * @param dest Destination string
  * @param src Source string
- * @return char* Pointer to the destination string
+ * @return Pointer to destination string
  */
 char* strcpy(char* dest, const char* src) {
     char* d = dest;
     
-    while ((*d++ = *src++) != '\0');
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
+        return dest;
+    }
+    
+    // Copy characters until null terminator
+    while ((*d++ = *src++)) {}
     
     return dest;
 }
 
 /**
- * @brief Copy at most n bytes from a string
+ * @brief Copy a string with length limit
  * 
  * @param dest Destination string
  * @param src Source string
- * @param n Maximum number of bytes to copy
- * @return char* Pointer to the destination string
+ * @param n Maximum number of characters to copy
+ * @return Pointer to destination string
  */
 char* strncpy(char* dest, const char* src, size_t n) {
-    char* d = dest;
+    size_t i;
     
-    // Copy bytes from src
-    while (n > 0 && *src) {
-        *d++ = *src++;
-        n--;
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
+        return dest;
     }
     
-    // Fill the rest with zeros
-    while (n > 0) {
-        *d++ = '\0';
-        n--;
+    // Copy characters until null terminator or limit
+    for (i = 0; i < n && src[i]; i++) {
+        dest[i] = src[i];
+    }
+    
+    // Pad with null terminators if needed
+    for (; i < n; i++) {
+        dest[i] = '\0';
     }
     
     return dest;
 }
 
 /**
- * @brief Append a string to another
+ * @brief Concatenate strings
  * 
  * @param dest Destination string
  * @param src Source string
- * @return char* Pointer to the destination string
+ * @return Pointer to destination string
  */
 char* strcat(char* dest, const char* src) {
     char* d = dest;
     
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
+        return dest;
+    }
+    
     // Find the end of the destination string
     while (*d) {
         d++;
     }
     
-    // Copy the source string
-    while ((*d++ = *src++) != '\0');
+    // Copy source string to the end of destination
+    strcpy(d, src);
     
     return dest;
 }
 
 /**
- * @brief Append at most n bytes of a string to another
+ * @brief Concatenate strings with length limit
  * 
  * @param dest Destination string
  * @param src Source string
- * @param n Maximum number of bytes to append
- * @return char* Pointer to the destination string
+ * @param n Maximum number of characters to append
+ * @return Pointer to destination string
  */
 char* strncat(char* dest, const char* src, size_t n) {
     char* d = dest;
+    size_t i;
+    
+    // Check for NULL pointers
+    if (dest == NULL || src == NULL) {
+        return dest;
+    }
     
     // Find the end of the destination string
     while (*d) {
         d++;
     }
     
-    // Copy at most n bytes from the source string
-    while (n > 0 && *src) {
-        *d++ = *src++;
-        n--;
+    // Copy source string to the end of destination with limit
+    for (i = 0; i < n && src[i]; i++) {
+        d[i] = src[i];
     }
     
-    // Make sure the string is null-terminated
-    *d = '\0';
+    // Ensure null termination
+    d[i] = '\0';
     
     return dest;
 }
 
 /**
- * @brief Compare two strings
+ * @brief Compare strings
  * 
  * @param s1 First string
  * @param s2 Second string
- * @return int 0 if equal, <0 if s1<s2, >0 if s1>s2
+ * @return < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
  */
 int strcmp(const char* s1, const char* s2) {
+    // Check for NULL pointers
+    if (s1 == NULL || s2 == NULL) {
+        return (s1 == s2) ? 0 : ((s1 == NULL) ? -1 : 1);
+    }
+    
+    // Compare characters until mismatch or null terminator
     while (*s1 && (*s1 == *s2)) {
         s1++;
         s2++;
@@ -229,96 +270,113 @@ int strcmp(const char* s1, const char* s2) {
 }
 
 /**
- * @brief Compare at most n bytes of two strings
+ * @brief Compare strings with length limit
  * 
  * @param s1 First string
  * @param s2 Second string
- * @param n Maximum number of bytes to compare
- * @return int 0 if equal, <0 if s1<s2, >0 if s1>s2
+ * @param n Maximum number of characters to compare
+ * @return < 0 if s1 < s2, 0 if s1 == s2, > 0 if s1 > s2
  */
 int strncmp(const char* s1, const char* s2, size_t n) {
+    // Check for NULL pointers
+    if (s1 == NULL || s2 == NULL) {
+        return (s1 == s2) ? 0 : ((s1 == NULL) ? -1 : 1);
+    }
+    
+    // Special case for n=0
     if (n == 0) {
         return 0;
     }
     
-    while (n-- > 0 && *s1 && (*s1 == *s2)) {
+    // Compare characters until mismatch, null terminator, or limit
+    while (--n && *s1 && (*s1 == *s2)) {
         s1++;
         s2++;
-    }
-    
-    if (n == (size_t)-1) {
-        return 0;
     }
     
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
 }
 
 /**
- * @brief Find the first occurrence of a character in a string
+ * @brief Find first occurrence of character in string
  * 
  * @param s String to search
  * @param c Character to find
- * @return char* Pointer to the character, or NULL if not found
+ * @return Pointer to first occurrence, or NULL if not found
  */
 char* strchr(const char* s, int c) {
-    while (*s) {
-        if (*s == (char)c) {
-            return (char*)s;
-        }
+    // Check for NULL pointer
+    if (s == NULL) {
+        return NULL;
+    }
+    
+    // Search for character until null terminator
+    while (*s && *s != (char)c) {
         s++;
     }
     
-    // Check for terminating null byte if c is '\0'
-    if ((char)c == '\0') {
-        return (char*)s;
-    }
-    
-    return NULL;
+    // Return pointer if found, NULL otherwise
+    return (*s == (char)c) ? (char*)s : NULL;
 }
 
 /**
- * @brief Find the last occurrence of a character in a string
+ * @brief Find last occurrence of character in string
  * 
  * @param s String to search
  * @param c Character to find
- * @return char* Pointer to the character, or NULL if not found
+ * @return Pointer to last occurrence, or NULL if not found
  */
 char* strrchr(const char* s, int c) {
-    const char* found = NULL;
+    const char* last = NULL;
     
+    // Check for NULL pointer
+    if (s == NULL) {
+        return NULL;
+    }
+    
+    // Search for character until null terminator
     while (*s) {
         if (*s == (char)c) {
-            found = s;
+            last = s;
         }
         s++;
     }
     
-    // Check for terminating null byte if c is '\0'
+    // Check for character in null terminator
     if ((char)c == '\0') {
         return (char*)s;
     }
     
-    return (char*)found;
+    // Return pointer if found, NULL otherwise
+    return (char*)last;
 }
 
 /**
- * @brief Find the first occurrence of a substring in a string
+ * @brief Find substring in string
  * 
  * @param haystack String to search in
  * @param needle Substring to find
- * @return char* Pointer to the beginning of the found substring, or NULL if not found
+ * @return Pointer to first occurrence, or NULL if not found
  */
 char* strstr(const char* haystack, const char* needle) {
-    size_t needle_len = strlen(needle);
+    size_t needle_len;
     
-    // Empty needle always matches
-    if (needle_len == 0) {
+    // Check for NULL pointers
+    if (haystack == NULL || needle == NULL) {
+        return NULL;
+    }
+    
+    // Special case for empty needle
+    if (*needle == '\0') {
         return (char*)haystack;
     }
     
-    // Search for the first occurrence of needle in haystack
+    // Get needle length
+    needle_len = strlen(needle);
+    
+    // Search for needle in haystack
     while (*haystack) {
-        if (*haystack == *needle && strncmp(haystack, needle, needle_len) == 0) {
+        if (strncmp(haystack, needle, needle_len) == 0) {
             return (char*)haystack;
         }
         haystack++;
@@ -328,17 +386,23 @@ char* strstr(const char* haystack, const char* needle) {
 }
 
 /**
- * @brief Convert a string to uppercase
+ * @brief Convert string to uppercase
  * 
  * @param s String to convert
- * @return char* Pointer to the converted string
+ * @return Pointer to converted string
  */
 char* strupr(char* s) {
     char* p = s;
     
+    // Check for NULL pointer
+    if (s == NULL) {
+        return NULL;
+    }
+    
+    // Convert each character to uppercase
     while (*p) {
         if (*p >= 'a' && *p <= 'z') {
-            *p -= ('a' - 'A');
+            *p = *p - 'a' + 'A';
         }
         p++;
     }
@@ -347,17 +411,23 @@ char* strupr(char* s) {
 }
 
 /**
- * @brief Convert a string to lowercase
+ * @brief Convert string to lowercase
  * 
  * @param s String to convert
- * @return char* Pointer to the converted string
+ * @return Pointer to converted string
  */
 char* strlwr(char* s) {
     char* p = s;
     
+    // Check for NULL pointer
+    if (s == NULL) {
+        return NULL;
+    }
+    
+    // Convert each character to lowercase
     while (*p) {
         if (*p >= 'A' && *p <= 'Z') {
-            *p += ('a' - 'A');
+            *p = *p - 'A' + 'a';
         }
         p++;
     }
@@ -369,15 +439,28 @@ char* strlwr(char* s) {
  * @brief Duplicate a string
  * 
  * @param s String to duplicate
- * @return char* Newly allocated copy of the string, or NULL if allocation fails
+ * @return Pointer to new string, or NULL if allocation fails
  */
 char* strdup(const char* s) {
-    size_t len = strlen(s) + 1; // Include null terminator
-    char* new_str = kmalloc(len);
+    size_t len;
+    char* dup;
     
-    if (new_str) {
-        return memcpy(new_str, s, len);
+    // Check for NULL pointer
+    if (s == NULL) {
+        return NULL;
     }
     
-    return NULL;
+    // Get string length
+    len = strlen(s) + 1;
+    
+    // Allocate memory for duplicate
+    dup = (char*)kmalloc(len);
+    if (dup == NULL) {
+        return NULL;
+    }
+    
+    // Copy string to duplicate
+    memcpy(dup, s, len);
+    
+    return dup;
 }
