@@ -29,6 +29,13 @@ typedef uint16_t gid_t;
 #define OS_FULLNAME OS_NAME " v" OS_VERSION
 
 /**
+ * @brief Kernel version information
+ */
+#define KERNEL_VERSION_MAJOR 0
+#define KERNEL_VERSION_MINOR 1
+#define KERNEL_VERSION_PATCH 0
+
+/**
  * @brief Architecture definitions
  */
 #define ARCH_X86_64
