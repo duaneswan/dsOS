@@ -1,9 +1,6 @@
 /**
  * @file kernel.h
- * @brief Main kernel header for dsOS
- * 
- * This file contains the core definitions and interfaces for the
- * dsOS kernel (dKernel).
+ * @brief Core kernel definitions, constants, and function prototypes
  */
 
 #ifndef _KERNEL_H
@@ -16,120 +13,122 @@
 /**
  * @brief Kernel version information
  */
-#define KERNEL_VERSION_MAJOR    0
-#define KERNEL_VERSION_MINOR    1
-#define KERNEL_VERSION_PATCH    0
+#define KERNEL_VERSION_MAJOR 0
+#define KERNEL_VERSION_MINOR 1
+#define KERNEL_VERSION_PATCH 0
 
 /**
- * @brief Constants for kernel panic and error handling
+ * @brief Panic types
  */
-#define PANIC_NORMAL            0   // Normal panic (bug or unrecoverable error)
-#define PANIC_HOS_BREACH        1   // Hidden OS breach detected
-#define PANIC_HARDWARE_FAULT    2   // Hardware fault detected
+#define PANIC_NORMAL         0
+#define PANIC_HOS_BREACH     1
+#define PANIC_HARDWARE_FAULT 2
 
 /**
- * @brief Status flags for kernel subsystems
+ * @brief Assertion macro for debugging
  */
-extern bool init_done;     // Kernel initialization complete
-extern bool fb_ready;      // Framebuffer initialized and ready
-extern bool kbd_ready;     // Keyboard initialized and ready
-
-/**
- * @brief Print a message to the kernel debug console
- * 
- * @param fmt Format string (printf-style)
- * @param ... Format arguments
- */
-void kprintf(const char* fmt, ...);
-
-/**
- * @brief Trigger a kernel panic (non-returning)
- * 
- * @param type Type of panic (PANIC_* constants)
- * @param msg Error message
- * @param file Source file where panic was triggered
- * @param line Line number where panic was triggered
- */
-void panic(int type, const char* msg, const char* file, int line);
-
-/**
- * @brief Kernel assertion macro
- * 
- * If the condition is false, triggers a kernel panic
- */
-#define kassert(cond) \
+#define kassert(condition) \
     do { \
-        if (!(cond)) { \
-            panic(PANIC_NORMAL, "Assertion failed: " #cond, __FILE__, __LINE__); \
+        if (!(condition)) { \
+            panic(PANIC_NORMAL, "Assertion failed: " #condition, __FILE__, __LINE__); \
         } \
     } while (0)
 
 /**
- * @brief Report a breach in the Hidden OS protection system
- * 
- * Displays a red screen with error message and register dump
- * 
- * @param reason String describing the breach reason
- * @param addr Address where breach was detected
+ * @brief CPU control instructions
  */
-void hos_breach(const char* reason, uintptr_t addr);
+static inline void cli(void) { __asm__ volatile("cli"); }
+static inline void sti(void) { __asm__ volatile("sti"); }
+static inline void hlt(void) { __asm__ volatile("hlt"); }
 
 /**
- * @brief Return current CPU flags
+ * @brief Read RFLAGS register
+ * 
+ * @return Current value of RFLAGS
  */
 static inline uint64_t read_flags(void) {
-    uint64_t flags;
-    asm volatile("pushfq; popq %0" : "=r"(flags));
-    return flags;
+    uint64_t rflags;
+    __asm__ volatile("pushfq; popq %0" : "=rm"(rflags) :: "memory");
+    return rflags;
 }
 
 /**
- * @brief Disable interrupts
+ * @brief Port I/O operations
  */
-static inline void cli(void) {
-    asm volatile("cli");
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
 }
 
-/**
- * @brief Enable interrupts
- */
-static inline void sti(void) {
-    asm volatile("sti");
-}
-
-/**
- * @brief Halt the CPU
- */
-static inline void hlt(void) {
-    asm volatile("hlt");
-}
-
-/**
- * @brief Read from an I/O port
- * 
- * @param port Port number
- * @return Value read from port
- */
 static inline uint8_t inb(uint16_t port) {
     uint8_t ret;
-    asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile("outw %0, %1" :: "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %1" :: "a"(val), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    __asm__ volatile("inl %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }
 
 /**
- * @brief Write to an I/O port
- * 
- * @param port Port number
- * @param val Value to write
+ * @brief IO wait - writes to an unused port to introduce a small delay
  */
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+static inline void io_wait(void) {
+    outb(0x80, 0);
 }
 
 /**
+ * @brief Memory operations
+ */
+void* memcpy(void* dest, const void* src, size_t n);
+void* memset(void* s, int c, size_t n);
+void* memmove(void* dest, const void* src, size_t n);
+int memcmp(const void* s1, const void* s2, size_t n);
+
+/**
+ * @brief String operations
+ */
+size_t strlen(const char* s);
+char* strcpy(char* dest, const char* src);
+char* strncpy(char* dest, const char* src, size_t n);
+int strcmp(const char* s1, const char* s2);
+int strncmp(const char* s1, const char* s2, size_t n);
+char* strcat(char* dest, const char* src);
+char* strncat(char* dest, const char* src, size_t n);
+
+/**
+ * @brief Printf family functions
+ */
+void kprintf(const char* fmt, ...);
+int snprintf(char* buffer, size_t size, const char* fmt, ...);
+
+/**
+ * @brief Kernel panic function (does not return)
+ */
+void panic(int type, const char* msg, const char* file, int line);
+
+/**
+ * @brief Report a breach in Hidden OS protection
+ */
+void hos_breach(const char* reason, uintptr_t addr);
+
+/**
  * @brief Kernel entry point
- * 
- * @param mb_info Multiboot information structure
  */
 void kernel_main(uintptr_t mb_info);
 
