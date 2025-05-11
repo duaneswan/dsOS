@@ -5,158 +5,194 @@
 
 #include "../include/kernel.h"
 #include "../include/memory.h"
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>
 
-// Heap constants
-#define HEAP_MAGIC        0x1BADB002   // Magic number for heap integrity checks
-#define HEAP_MIN_SIZE     4096         // Minimum size of the heap in bytes
-#define HEAP_MIN_ALLOC    16           // Minimum allocation size
-#define HEAP_MAX_ALLOC    0x10000000   // Maximum allocation size (256MB)
+// Heap control block and free block structure
+typedef struct heap_block {
+    size_t size;                 // Size of this block in bytes (including header)
+    bool free;                   // Whether this block is free
+    struct heap_block* next;     // Next block in the list
+    struct heap_block* prev;     // Previous block in the list
+} heap_block_t;
 
-// Alignment for allocations
-#define HEAP_ALIGN        8            // Align all allocations to 8 bytes
+// Heap statistics
+static size_t heap_size = 0;     // Total heap size
+static size_t heap_used = 0;     // Used heap memory
+static size_t alloc_count = 0;   // Number of active allocations
 
-/**
- * @brief Heap block header
- */
-typedef struct block_header {
-    uint32_t magic;               // Magic number for integrity check
-    uint32_t flags;               // Block flags (e.g., allocated, free)
-    size_t size;                  // Size of the block (excluding header)
-    struct block_header* prev;    // Previous block in the list
-    struct block_header* next;    // Next block in the list
-} block_header_t;
+// Heap control
+static uintptr_t heap_start = 0; // Start address of the heap
+static uintptr_t heap_end = 0;   // End address of the heap
+static heap_block_t* free_list = NULL; // Start of the free list
 
-// Block flags
-#define BLOCK_FREE      0x00000001     // Block is free
-#define BLOCK_LAST      0x00000002     // Last block in the heap
-
-// Heap state
-static uintptr_t heap_start = 0;       // Start address of the heap
-static uintptr_t heap_end = 0;         // End address of the heap
-static size_t heap_size = 0;           // Total size of the heap
-static size_t used_space = 0;          // Space used by allocations
-static block_header_t* free_list = NULL; // List of free blocks
+// Magic values for checking heap integrity
+#define HEAP_MAGIC          0x4845415042524B00ULL // "HEAPBRK\0"
+#define HEAP_BLOCK_MAGIC    0x424C4F434B00ULL     // "BLOCK\0\0"
 
 // Forward declarations
-static void* heap_allocate_block(size_t size);
-static bool heap_free_block(void* ptr);
-static block_header_t* heap_find_free_block(size_t size);
-static block_header_t* heap_split_block(block_header_t* block, size_t size);
-static bool heap_merge_blocks(block_header_t* block);
-static bool heap_check_integrity(void);
-static void heap_dump(void);
+static heap_block_t* find_free_block(size_t size, size_t align);
+static void split_block(heap_block_t* block, size_t size);
+static bool merge_adjacent_blocks(heap_block_t* block);
+static bool is_block_free(heap_block_t* block);
 
 /**
  * @brief Initialize the kernel heap
  * 
- * @param start Start address of the heap
- * @param size Size of the heap in bytes
+ * @param start Start virtual address of the heap area
+ * @param size Size of the heap area in bytes
  */
 void heap_init(uintptr_t start, size_t size) {
-    // Ensure the heap is at least the minimum size
-    if (size < HEAP_MIN_SIZE) {
-        kprintf("Heap: Error - Heap size too small: %zu bytes\n", size);
-        return;
-    }
+    // Align start address to page boundary
+    start = (start + PAGE_SIZE - 1) & PAGE_MASK;
     
-    // Align the start address
-    uintptr_t aligned_start = (start + (HEAP_ALIGN - 1)) & ~(HEAP_ALIGN - 1);
-    
-    // Adjust the size to account for the alignment
-    size -= (aligned_start - start);
-    
-    // Save the heap parameters
-    heap_start = aligned_start;
+    // Save heap parameters
+    heap_start = start;
     heap_size = size;
-    heap_end = heap_start + heap_size;
+    heap_end = start + size;
+    heap_used = 0;
+    alloc_count = 0;
     
-    // Create the initial free block
-    block_header_t* initial_block = (block_header_t*)heap_start;
-    initial_block->magic = HEAP_MAGIC;
-    initial_block->flags = BLOCK_FREE | BLOCK_LAST;
-    initial_block->size = heap_size - sizeof(block_header_t);
-    initial_block->prev = NULL;
-    initial_block->next = NULL;
+    // Initialize the free list with a single block covering the entire heap
+    free_list = (heap_block_t*)start;
+    free_list->size = size;
+    free_list->free = true;
+    free_list->next = NULL;
+    free_list->prev = NULL;
     
-    // Initialize the free list
-    free_list = initial_block;
-    
-    // No space used initially
-    used_space = 0;
-    
-    kprintf("Heap: Initialized at %p, size: %zu bytes\n", (void*)heap_start, heap_size);
+    kprintf("HEAP: Kernel heap initialized at 0x%lx, size %lu KB\n", 
+            heap_start, heap_size / 1024);
 }
 
 /**
  * @brief Allocate memory from the kernel heap
  * 
  * @param size Size to allocate in bytes
- * @return Pointer to the allocated memory, or NULL if out of memory
+ * @return Pointer to the allocated memory, or NULL if allocation failed
  */
 void* kmalloc(size_t size) {
-    // Check for valid size
-    if (size == 0 || size > HEAP_MAX_ALLOC) {
-        kprintf("Heap: Error - Invalid allocation size: %zu bytes\n", size);
+    // Handle 0-size allocations
+    if (size == 0) {
         return NULL;
     }
     
-    // Align the size
-    size = (size + (HEAP_ALIGN - 1)) & ~(HEAP_ALIGN - 1);
+    // Calculate required size with header
+    size_t required_size = size + sizeof(heap_block_t);
     
-    // Ensure minimum allocation size
-    if (size < HEAP_MIN_ALLOC) {
-        size = HEAP_MIN_ALLOC;
+    // Align to 8-byte boundary
+    required_size = (required_size + 7) & ~7;
+    
+    // Find a suitable free block
+    heap_block_t* block = find_free_block(required_size, sizeof(void*));
+    if (!block) {
+        // Out of memory
+        return NULL;
     }
     
-    // Allocate the block
-    return heap_allocate_block(size);
+    // Split the block if it's much larger than needed
+    if (block->size > required_size + sizeof(heap_block_t) + 16) {
+        split_block(block, required_size);
+    }
+    
+    // Mark the block as used
+    block->free = false;
+    
+    // Update statistics
+    heap_used += block->size;
+    alloc_count++;
+    
+    // Return pointer to the data area
+    return (void*)((uintptr_t)block + sizeof(heap_block_t));
 }
 
 /**
  * @brief Allocate aligned memory from the kernel heap
  * 
  * @param size Size to allocate in bytes
- * @param alignment Alignment in bytes (must be power of 2)
- * @return Pointer to the allocated memory, or NULL if out of memory
+ * @param align Alignment boundary (must be a power of 2)
+ * @return Pointer to the allocated memory, or NULL if allocation failed
  */
-void* kmalloc_aligned(size_t size, size_t alignment) {
-    // Check for valid size and alignment
-    if (size == 0 || size > HEAP_MAX_ALLOC || alignment == 0 || (alignment & (alignment - 1)) != 0) {
-        kprintf("Heap: Error - Invalid aligned allocation parameters: size=%zu, alignment=%zu\n", size, alignment);
+void* kmalloc_aligned(size_t size, size_t align) {
+    // Handle 0-size allocations
+    if (size == 0) {
         return NULL;
     }
     
-    // Ensure alignment is at least HEAP_ALIGN
-    if (alignment < HEAP_ALIGN) {
-        alignment = HEAP_ALIGN;
-    }
-    
-    // Allocate extra space to ensure we can align properly
-    size_t total_size = size + alignment;
-    
-    // Allocate a block with extra space
-    void* ptr = kmalloc(total_size);
-    if (ptr == NULL) {
+    // Ensure alignment is a power of 2
+    if ((align & (align - 1)) != 0) {
+        // Not a power of 2
         return NULL;
     }
     
-    // Calculate the aligned address
-    uintptr_t addr = (uintptr_t)ptr;
-    uintptr_t aligned_addr = (addr + alignment - 1) & ~(alignment - 1);
+    // Calculate required size with header
+    size_t required_size = size + sizeof(heap_block_t) + align;
     
-    // If already aligned, return as is
-    if (addr == aligned_addr) {
-        return ptr;
+    // Align to 8-byte boundary
+    required_size = (required_size + 7) & ~7;
+    
+    // Find a suitable free block
+    heap_block_t* block = find_free_block(required_size, align);
+    if (!block) {
+        // Out of memory
+        return NULL;
     }
     
-    // Calculate the offset and store it just before the aligned address
-    uintptr_t* offset_ptr = (uintptr_t*)(aligned_addr - sizeof(uintptr_t));
-    *offset_ptr = aligned_addr - addr;
+    // Calculate aligned address
+    uintptr_t data_addr = (uintptr_t)block + sizeof(heap_block_t);
+    uintptr_t aligned_addr = (data_addr + align - 1) & ~(align - 1);
+    size_t padding = aligned_addr - data_addr;
     
-    return (void*)aligned_addr;
+    // If there's padding, we need to create a new block
+    if (padding > 0) {
+        // We need enough space for a new block header + the aligned data
+        if (padding >= sizeof(heap_block_t)) {
+            // Create a new block for the padding
+            heap_block_t* padding_block = (heap_block_t*)((uintptr_t)block + sizeof(heap_block_t) + padding - sizeof(heap_block_t));
+            padding_block->size = block->size - padding;
+            padding_block->free = false;
+            padding_block->next = block->next;
+            padding_block->prev = block;
+            
+            if (block->next) {
+                block->next->prev = padding_block;
+            }
+            
+            block->next = padding_block;
+            block->size = padding;
+            
+            block = padding_block;
+        }
+    }
+    
+    // Split the block if it's much larger than needed
+    if (block->size > size + sizeof(heap_block_t) + 16) {
+        split_block(block, size + sizeof(heap_block_t));
+    }
+    
+    // Mark the block as used
+    block->free = false;
+    
+    // Update statistics
+    heap_used += block->size;
+    alloc_count++;
+    
+    // Return pointer to the data area
+    return (void*)((uintptr_t)block + sizeof(heap_block_t));
+}
+
+/**
+ * @brief Allocate zero-initialized memory from the kernel heap
+ * 
+ * @param size Size to allocate in bytes
+ * @return Pointer to the allocated memory, or NULL if allocation failed
+ */
+void* kzalloc(size_t size) {
+    void* ptr = kmalloc(size);
+    if (ptr) {
+        memset(ptr, 0, size);
+    }
+    return ptr;
 }
 
 /**
@@ -165,39 +201,33 @@ void* kmalloc_aligned(size_t size, size_t alignment) {
  * @param ptr Pointer to the memory to free
  */
 void kfree(void* ptr) {
-    // Check for NULL pointer
-    if (ptr == NULL) {
+    // Handle NULL pointer
+    if (!ptr) {
         return;
     }
     
-    // Check if this is an aligned allocation
-    uintptr_t addr = (uintptr_t)ptr;
-    uintptr_t* offset_ptr = (uintptr_t*)(addr - sizeof(uintptr_t));
+    // Get the block header
+    heap_block_t* block = (heap_block_t*)((uintptr_t)ptr - sizeof(heap_block_t));
     
-    // Try to find the header
-    block_header_t* header = (block_header_t*)(addr - sizeof(block_header_t));
-    
-    // Check if this appears to be a valid block
-    if (header->magic == HEAP_MAGIC && (header->flags & BLOCK_FREE) == 0) {
-        // Valid header found, free the block
-        heap_free_block(ptr);
-        return;
+    // Validate the block is within the heap
+    if ((uintptr_t)block < heap_start || (uintptr_t)block >= heap_end) {
+        panic(PANIC_NORMAL, "Invalid free: ptr outside heap range", __FILE__, __LINE__);
     }
     
-    // Check if this is an aligned allocation
-    if (addr >= heap_start + sizeof(uintptr_t) && addr < heap_end) {
-        uintptr_t offset = *offset_ptr;
-        
-        // Check if the offset looks valid
-        if (offset > 0 && offset < HEAP_MAX_ALLOC) {
-            // Try to free the original allocation
-            heap_free_block((void*)(addr - offset));
-            return;
-        }
+    // Check if the block is already free
+    if (block->free) {
+        panic(PANIC_NORMAL, "Double free detected", __FILE__, __LINE__);
     }
     
-    // Invalid pointer
-    kprintf("Heap: Error - Attempt to free invalid pointer: %p\n", ptr);
+    // Update statistics
+    heap_used -= block->size;
+    alloc_count--;
+    
+    // Mark the block as free
+    block->free = true;
+    
+    // Try to merge with adjacent blocks
+    merge_adjacent_blocks(block);
 }
 
 /**
@@ -205,76 +235,57 @@ void kfree(void* ptr) {
  * 
  * @param ptr Pointer to the memory to reallocate
  * @param size New size in bytes
- * @return Pointer to the reallocated memory, or NULL if out of memory
+ * @return Pointer to the reallocated memory, or NULL if reallocation failed
  */
 void* krealloc(void* ptr, size_t size) {
-    // If ptr is NULL, this is equivalent to kmalloc
-    if (ptr == NULL) {
+    // Handle NULL pointer (equivalent to kmalloc)
+    if (!ptr) {
         return kmalloc(size);
     }
     
-    // If size is 0, this is equivalent to kfree
+    // Handle 0-size (equivalent to kfree)
     if (size == 0) {
         kfree(ptr);
         return NULL;
     }
     
-    // Check for valid size
-    if (size > HEAP_MAX_ALLOC) {
-        kprintf("Heap: Error - Invalid reallocation size: %zu bytes\n", size);
-        return NULL;
-    }
+    // Get the block header
+    heap_block_t* block = (heap_block_t*)((uintptr_t)ptr - sizeof(heap_block_t));
     
-    // Find the block header
-    block_header_t* header = (block_header_t*)((uintptr_t)ptr - sizeof(block_header_t));
+    // Calculate current data size
+    size_t current_size = block->size - sizeof(heap_block_t);
     
-    // Check if this is a valid block
-    if (header->magic != HEAP_MAGIC || (header->flags & BLOCK_FREE) != 0) {
-        kprintf("Heap: Error - Attempt to reallocate invalid pointer: %p\n", ptr);
-        return NULL;
-    }
-    
-    // If new size is smaller, we can simply shrink the block
-    if (size <= header->size) {
-        // Align the size
-        size = (size + (HEAP_ALIGN - 1)) & ~(HEAP_ALIGN - 1);
+    // If new size is smaller or the same, we can use the existing block
+    if (size <= current_size) {
+        // If the block is much larger than needed, split it
+        size_t required_size = size + sizeof(heap_block_t);
+        required_size = (required_size + 7) & ~7;
         
-        // Ensure minimum allocation size
-        if (size < HEAP_MIN_ALLOC) {
-            size = HEAP_MIN_ALLOC;
+        if (block->size > required_size + sizeof(heap_block_t) + 16) {
+            split_block(block, required_size);
+            heap_used -= (block->size - required_size);
         }
         
-        // If new size is significantly smaller, split the block
-        if (header->size - size >= sizeof(block_header_t) + HEAP_MIN_ALLOC) {
-            // Split the block
-            block_header_t* new_block = (block_header_t*)((uintptr_t)header + sizeof(block_header_t) + size);
-            new_block->magic = HEAP_MAGIC;
-            new_block->flags = BLOCK_FREE;
-            new_block->size = header->size - size - sizeof(block_header_t);
-            new_block->prev = header;
-            new_block->next = header->next;
-            
-            // Update the current block
-            header->size = size;
-            header->next = new_block;
-            
-            // If this was the last block, update flags
-            if (header->flags & BLOCK_LAST) {
-                header->flags &= ~BLOCK_LAST;
-                new_block->flags |= BLOCK_LAST;
-            } else if (new_block->next) {
-                new_block->next->prev = new_block;
-            }
-            
-            // Add the new block to the free list
-            new_block->next = free_list;
-            if (free_list) {
-                free_list->prev = new_block;
-            }
-            free_list = new_block;
-            
-            // Update used space
-            used_space -= new_block->size + sizeof(block_header_t);
+        return ptr;
+    }
+    
+    // Try to merge with the next block if it's free
+    if (block->next && block->next->free && 
+        block->size + block->next->size >= size + sizeof(heap_block_t)) {
+        
+        // Merge the blocks
+        block->size += block->next->size;
+        block->next = block->next->next;
+        if (block->next) {
+            block->next->prev = block;
+        }
+        
+        // If the merged block is much larger than needed, split it
+        size_t required_size = size + sizeof(heap_block_t);
+        required_size = (required_size + 7) & ~7;
+        
+        if (block->size > required_size + sizeof(heap_block_t) + 16) {
+            split_block(block, required_size);
         }
         
         return ptr;
@@ -282,12 +293,12 @@ void* krealloc(void* ptr, size_t size) {
     
     // Allocate a new, larger block
     void* new_ptr = kmalloc(size);
-    if (new_ptr == NULL) {
+    if (!new_ptr) {
         return NULL;
     }
     
-    // Copy the data from the old block to the new block
-    memcpy(new_ptr, ptr, header->size);
+    // Copy the old data
+    memcpy(new_ptr, ptr, current_size);
     
     // Free the old block
     kfree(ptr);
@@ -296,387 +307,132 @@ void* krealloc(void* ptr, size_t size) {
 }
 
 /**
- * @brief Get the size of an allocated block
+ * @brief Get the size of an allocated memory block
  * 
  * @param ptr Pointer to the allocated memory
- * @return Size of the allocated block in bytes, or 0 if invalid
+ * @return Size of the allocated block in bytes, or 0 if ptr is NULL
  */
 size_t ksize(void* ptr) {
-    // Check for NULL pointer
-    if (ptr == NULL) {
+    // Handle NULL pointer
+    if (!ptr) {
         return 0;
     }
     
-    // Find the block header
-    block_header_t* header = (block_header_t*)((uintptr_t)ptr - sizeof(block_header_t));
+    // Get the block header
+    heap_block_t* block = (heap_block_t*)((uintptr_t)ptr - sizeof(heap_block_t));
     
-    // Check if this is a valid block
-    if (header->magic != HEAP_MAGIC || (header->flags & BLOCK_FREE) != 0) {
-        kprintf("Heap: Error - Attempt to get size of invalid pointer: %p\n", ptr);
+    // Validate the block is within the heap
+    if ((uintptr_t)block < heap_start || (uintptr_t)block >= heap_end) {
         return 0;
     }
     
-    return header->size;
+    // Return the data size
+    return block->size - sizeof(heap_block_t);
 }
 
 /**
- * @brief Print heap statistics
- */
-void heap_stats(void) {
-    // Count the number of allocated and free blocks
-    size_t allocated_blocks = 0;
-    size_t free_blocks = 0;
-    size_t free_space = 0;
-    
-    // Traverse all blocks
-    block_header_t* block = (block_header_t*)heap_start;
-    while (block) {
-        if (block->magic != HEAP_MAGIC) {
-            kprintf("Heap: Error - Corrupted heap detected at %p\n", block);
-            return;
-        }
-        
-        if (block->flags & BLOCK_FREE) {
-            free_blocks++;
-            free_space += block->size;
-        } else {
-            allocated_blocks++;
-        }
-        
-        if (block->flags & BLOCK_LAST) {
-            break;
-        }
-        
-        block = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + block->size);
-    }
-    
-    // Print statistics
-    kprintf("Heap Statistics:\n");
-    kprintf("  Total Size: %zu bytes\n", heap_size);
-    kprintf("  Used Space: %zu bytes (%.2f%%)\n", used_space, (double)used_space / heap_size * 100.0);
-    kprintf("  Free Space: %zu bytes (%.2f%%)\n", free_space, (double)free_space / heap_size * 100.0);
-    kprintf("  Allocated Blocks: %zu\n", allocated_blocks);
-    kprintf("  Free Blocks: %zu\n", free_blocks);
-}
-
-/**
- * @brief Allocate a block from the heap
+ * @brief Get information about heap usage
  * 
- * @param size Size to allocate in bytes
- * @return Pointer to the allocated memory, or NULL if out of memory
+ * @param total Pointer where to store total heap size in bytes
+ * @param used Pointer where to store used heap size in bytes
+ * @param count Pointer where to store number of allocations
  */
-static void* heap_allocate_block(size_t size) {
-    // Check if heap is initialized
-    if (heap_start == 0) {
-        kprintf("Heap: Error - Heap not initialized\n");
-        return NULL;
-    }
-    
-    // Find a suitable free block
-    block_header_t* block = heap_find_free_block(size);
-    if (block == NULL) {
-        kprintf("Heap: Error - Out of memory (requested %zu bytes)\n", size);
-        return NULL;
-    }
-    
-    // Remove the block from the free list
-    if (block->prev && (block->prev->flags & BLOCK_FREE)) {
-        block->prev->next = block->next;
-    } else {
-        free_list = block->next;
-    }
-    
-    if (block->next && (block->next->flags & BLOCK_FREE)) {
-        block->next->prev = block->prev;
-    }
-    
-    // Split the block if it's larger than needed
-    if (block->size > size + sizeof(block_header_t) + HEAP_MIN_ALLOC) {
-        block = heap_split_block(block, size);
-    }
-    
-    // Mark the block as allocated
-    block->flags &= ~BLOCK_FREE;
-    
-    // Update used space
-    used_space += block->size + sizeof(block_header_t);
-    
-    // Return the pointer to the data area
-    return (void*)((uintptr_t)block + sizeof(block_header_t));
+void heap_get_info(size_t* total, size_t* used, size_t* count) {
+    if (total) *total = heap_size;
+    if (used) *used = heap_used;
+    if (count) *count = alloc_count;
 }
 
 /**
- * @brief Free a block in the heap
- * 
- * @param ptr Pointer to the memory to free
- * @return true if the block was freed, false otherwise
- */
-static bool heap_free_block(void* ptr) {
-    // Find the block header
-    block_header_t* block = (block_header_t*)((uintptr_t)ptr - sizeof(block_header_t));
-    
-    // Check if this is a valid block
-    if (block->magic != HEAP_MAGIC) {
-        kprintf("Heap: Error - Invalid block magic: %p (%08x)\n", block, block->magic);
-        return false;
-    }
-    
-    // Check if the block is already free
-    if (block->flags & BLOCK_FREE) {
-        kprintf("Heap: Error - Block already free: %p\n", block);
-        return false;
-    }
-    
-    // Mark the block as free
-    block->flags |= BLOCK_FREE;
-    
-    // Update used space
-    used_space -= block->size + sizeof(block_header_t);
-    
-    // Add the block to the free list
-    block->next = free_list;
-    block->prev = NULL;
-    if (free_list != NULL) {
-        free_list->prev = block;
-    }
-    free_list = block;
-    
-    // Try to merge adjacent free blocks
-    heap_merge_blocks(block);
-    
-    return true;
-}
-
-/**
- * @brief Find a free block with sufficient size
+ * @brief Find a free block of the given size
  * 
  * @param size Size needed in bytes
+ * @param align Alignment requirement
  * @return Pointer to a suitable free block, or NULL if none found
  */
-static block_header_t* heap_find_free_block(size_t size) {
-    // Search through the free list
-    block_header_t* best_block = NULL;
-    size_t best_size = SIZE_MAX;
+static heap_block_t* find_free_block(size_t size, size_t align) {
+    // First-fit strategy: use the first block that fits
+    heap_block_t* block = free_list;
     
-    // Traverse the free list to find the best fit
-    block_header_t* block = free_list;
-    while (block != NULL) {
-        // Check if the block is free and large enough
-        if ((block->flags & BLOCK_FREE) && block->size >= size) {
-            // Check if this is a better fit than the previous best
-            if (block->size < best_size) {
-                best_block = block;
-                best_size = block->size;
+    while (block) {
+        if (block->free && block->size >= size) {
+            // Check alignment if needed
+            if (align > 1) {
+                uintptr_t data_addr = (uintptr_t)block + sizeof(heap_block_t);
+                uintptr_t aligned_addr = (data_addr + align - 1) & ~(align - 1);
+                size_t padding = aligned_addr - data_addr;
                 
-                // Perfect fit, stop searching
-                if (best_size == size) {
-                    break;
+                // Check if there's enough space with alignment
+                if (block->size >= size + padding) {
+                    return block;
                 }
+            } else {
+                return block;
             }
         }
-        
         block = block->next;
     }
     
-    return best_block;
+    return NULL;
 }
 
 /**
- * @brief Split a block into two blocks
+ * @brief Split a block into two
  * 
  * @param block Block to split
  * @param size Size of the first part
- * @return Pointer to the first block
  */
-static block_header_t* heap_split_block(block_header_t* block, size_t size) {
-    // Calculate the address of the new block
-    block_header_t* new_block = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + size);
+static void split_block(heap_block_t* block, size_t size) {
+    // Calculate the new block position
+    heap_block_t* new_block = (heap_block_t*)((uintptr_t)block + size);
     
-    // Initialize the new block
-    new_block->magic = HEAP_MAGIC;
-    new_block->flags = BLOCK_FREE;
-    new_block->size = block->size - size - sizeof(block_header_t);
-    new_block->prev = block;
+    // Setup the new block
+    new_block->size = block->size - size;
+    new_block->free = true;
     new_block->next = block->next;
+    new_block->prev = block;
     
-    // Update next block if this wasn't the last block
-    if (!(block->flags & BLOCK_LAST)) {
-        // Find the next block
-        block_header_t* next_block = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + block->size);
-        
-        // Update the next block's previous pointer
-        if (next_block->magic == HEAP_MAGIC) {
-            next_block->prev = new_block;
-        }
-    } else {
-        // Transfer the last flag to the new block
-        new_block->flags |= BLOCK_LAST;
-        block->flags &= ~BLOCK_LAST;
+    // Update the links
+    if (block->next) {
+        block->next->prev = new_block;
     }
-    
-    // Update the block
-    block->size = size;
     block->next = new_block;
     
-    // Add the new block to the free list
-    new_block->next = free_list;
-    if (free_list != NULL) {
-        free_list->prev = new_block;
-    }
-    free_list = new_block;
-    
-    return block;
+    // Update the original block's size
+    block->size = size;
 }
 
 /**
- * @brief Try to merge adjacent free blocks
+ * @brief Try to merge a free block with adjacent free blocks
  * 
- * @param block Block to start merging from
- * @return true if any blocks were merged, false otherwise
+ * @param block Block to merge
+ * @return true if a merge occurred, false otherwise
  */
-static bool heap_merge_blocks(block_header_t* block) {
+static bool merge_adjacent_blocks(heap_block_t* block) {
     bool merged = false;
     
-    // Check if we can merge with the next block
-    while (!(block->flags & BLOCK_LAST)) {
-        // Get the next physical block (not linked list next)
-        block_header_t* next = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + block->size);
-        
-        // Check if the next block is valid and free
-        if (next->magic == HEAP_MAGIC && (next->flags & BLOCK_FREE)) {
-            // Remove next block from the free list
-            if (next->prev && (next->prev->flags & BLOCK_FREE)) {
-                next->prev->next = next->next;
-            } else {
-                free_list = next->next;
-            }
-            
-            if (next->next && (next->next->flags & BLOCK_FREE)) {
-                next->next->prev = next->prev;
-            }
-            
-            // Merge the blocks
-            if (next->flags & BLOCK_LAST) {
-                block->flags |= BLOCK_LAST;
-            }
-            block->size += sizeof(block_header_t) + next->size;
-            
-            // Ensure we don't leave a dangling reference
-            next->magic = 0;
-            
-            merged = true;
-        } else {
-            // Can't merge, stop
-            break;
+    // Try to merge with the next block
+    if (block->next && block->next->free) {
+        block->size += block->next->size;
+        block->next = block->next->next;
+        if (block->next) {
+            block->next->prev = block;
         }
+        merged = true;
     }
     
-    // Check if we can merge with the previous block
-    while (block->prev != NULL && (block->prev->flags & BLOCK_FREE)) {
-        block_header_t* prev = block->prev;
-        
-        // Check if these are physically adjacent blocks
-        if ((uintptr_t)prev + sizeof(block_header_t) + prev->size == (uintptr_t)block) {
-            // Remove block from the free list
-            if (block->prev && (block->prev->flags & BLOCK_FREE)) {
-                block->prev->next = block->next;
-            } else {
-                free_list = block->next;
-            }
-            
-            if (block->next && (block->next->flags & BLOCK_FREE)) {
-                block->next->prev = block->prev;
-            }
-            
-            // Merge the blocks
-            if (block->flags & BLOCK_LAST) {
-                prev->flags |= BLOCK_LAST;
-            }
-            prev->size += sizeof(block_header_t) + block->size;
-            prev->next = block->next;
-            
-            // Ensure we don't leave a dangling reference
-            block->magic = 0;
-            
-            // Continue with prev block
-            block = prev;
-            
-            merged = true;
-        } else {
-            // Can't merge, stop
-            break;
+    // Try to merge with the previous block
+    if (block->prev && block->prev->free) {
+        block->prev->size += block->size;
+        block->prev->next = block->next;
+        if (block->next) {
+            block->next->prev = block->prev;
         }
+        merged = true;
+        
+        // The merged block is now the previous one
+        block = block->prev;
     }
     
     return merged;
-}
-
-/**
- * @brief Check heap integrity
- * 
- * @return true if the heap is intact, false otherwise
- */
-static bool heap_check_integrity(void) {
-    if (heap_start == 0 || heap_size == 0) {
-        return false;
-    }
-    
-    block_header_t* block = (block_header_t*)heap_start;
-    bool found_last = false;
-    
-    while (!found_last) {
-        // Check block magic
-        if (block->magic != HEAP_MAGIC) {
-            kprintf("Heap: Error - Invalid block magic at %p (%08x)\n", block, block->magic);
-            return false;
-        }
-        
-        // Check if we've reached the last block
-        found_last = (block->flags & BLOCK_LAST) != 0;
-        
-        // Make sure we're still within the heap bounds
-        if ((uintptr_t)block + sizeof(block_header_t) + block->size > heap_end) {
-            kprintf("Heap: Error - Block extends beyond heap bounds at %p\n", block);
-            return false;
-        }
-        
-        // Move to the next physical block
-        if (!found_last) {
-            block = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + block->size);
-        }
-    }
-    
-    return true;
-}
-
-/**
- * @brief Dump the heap state for debugging
- */
-static void heap_dump(void) {
-    kprintf("Heap Dump:\n");
-    kprintf("  Start: %p\n", (void*)heap_start);
-    kprintf("  End: %p\n", (void*)heap_end);
-    kprintf("  Size: %zu bytes\n", heap_size);
-    kprintf("  Used: %zu bytes\n", used_space);
-    
-    // Traverse all blocks
-    block_header_t* block = (block_header_t*)heap_start;
-    size_t block_idx = 0;
-    
-    while (block) {
-        kprintf("  Block %zu at %p:\n", block_idx++, block);
-        kprintf("    Magic: %08x\n", block->magic);
-        kprintf("    Flags: %08x (%s%s)\n", block->flags,
-                (block->flags & BLOCK_FREE) ? "FREE" : "USED",
-                (block->flags & BLOCK_LAST) ? " LAST" : "");
-        kprintf("    Size: %zu bytes\n", block->size);
-        kprintf("    Prev: %p\n", block->prev);
-        kprintf("    Next: %p\n", block->next);
-        
-        if (block->flags & BLOCK_LAST) {
-            break;
-        }
-        
-        block = (block_header_t*)((uintptr_t)block + sizeof(block_header_t) + block->size);
-    }
 }
