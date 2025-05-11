@@ -6,6 +6,7 @@
 #include "../../include/kernel.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 // Serial port addresses
 #define SERIAL_COM1       0x3F8      // COM1 base port
