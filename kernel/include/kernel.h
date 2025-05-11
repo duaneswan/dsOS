@@ -299,6 +299,7 @@ void timer_init(void);
 uint64_t timer_get_ticks(void);
 uint64_t timer_get_ms(void);
 void timer_wait_ms(uint32_t ms);
+uint64_t read_flags(void);
 void sleep_timer_init(void);
 void kb_init(void);
 
