@@ -36,12 +36,12 @@ static void fill_screen(uint32_t color);
 /**
  * @brief Kernel panic - fatal error handler
  * 
+ * @param type Type of panic (PANIC_* constants)
+ * @param msg Error message
  * @param file Source file where panic occurred
  * @param line Line number where panic occurred
- * @param fmt Format string for panic message
- * @param ... Additional arguments for format string
  */
-void panic(const char* file, int line, const char* fmt, ...) {
+void panic(int type, const char* msg, const char* file, int line) {
     // Avoid recursive panics
     if (in_panic) {
         kprintf("\nRecursive panic detected!\n");
@@ -55,26 +55,49 @@ void panic(const char* file, int line, const char* fmt, ...) {
     // Switch to console output mode
     kprintf_set_mode(PRINTF_MODE_BOTH);
     
-    // If we have a framebuffer, draw blue screen
+    // If we have a framebuffer, draw screen with appropriate color
     if (fb_ready && framebuffer_base != NULL) {
-        fill_screen(PANIC_BG_COLOR);
+        uint32_t color = PANIC_BG_COLOR;
+        
+        // Select color based on panic type
+        if (type == PANIC_HOS_BREACH) {
+            color = BREACH_BG_COLOR;
+        } else if (type == PANIC_HARDWARE_FAULT) {
+            // Different shade of blue for hardware faults
+            color = 0x000088;
+        }
+        
+        fill_screen(color);
     }
     
-    // Print panic header
+    // Print panic header based on type
     kprintf("\n\n");
-    kprintf("********************************\n");
-    kprintf("*** KERNEL PANIC - NOT SYNCING\n");
-    kprintf("********************************\n\n");
+    
+    switch (type) {
+        case PANIC_HOS_BREACH:
+            kprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+            kprintf("!!! HIDDEN OS SECURITY BREACH DETECTED\n");
+            kprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
+            break;
+            
+        case PANIC_HARDWARE_FAULT:
+            kprintf("********************************\n");
+            kprintf("*** HARDWARE FAULT DETECTED\n");
+            kprintf("********************************\n\n");
+            break;
+            
+        default:
+            kprintf("********************************\n");
+            kprintf("*** KERNEL PANIC - NOT SYNCING\n");
+            kprintf("********************************\n\n");
+            break;
+    }
     
     // Print file and line information
     kprintf("At %s:%d\n\n", file, line);
     
     // Print panic message
-    va_list args;
-    va_start(args, fmt);
-    vkprintf(fmt, args);
-    va_end(args);
-    kprintf("\n\n");
+    kprintf("%s\n\n", msg);
     
     // Print backtrace
     print_backtrace();
@@ -143,12 +166,10 @@ void kassertf(bool condition, const char* file, int line, const char* fmt, ...) 
 /**
  * @brief Hidden OS security breach handler
  * 
- * @param file Source file where breach was detected
- * @param line Line number where breach was detected
  * @param reason Reason for the breach
- * @param regs Register state at the time of breach
+ * @param addr Address where breach was detected
  */
-void hos_breach(const char* file, int line, const char* reason, void* regs) {
+void hos_breach(const char* reason, uintptr_t addr) {
     // Avoid recursive breaches
     if (in_panic) {
         kprintf("\nRecursive breach handler invoked!\n");
@@ -173,14 +194,9 @@ void hos_breach(const char* file, int line, const char* reason, void* regs) {
     kprintf("!!! HIDDEN OS SECURITY BREACH DETECTED\n");
     kprintf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
     
-    // Print file, line, and reason
-    kprintf("At %s:%d\n", file, line);
-    kprintf("Reason: %s\n\n", reason);
-    
-    // Dump registers if available
-    if (regs != NULL) {
-        dump_registers((registers_t*)regs);
-    }
+    // Print breach information
+    kprintf("Reason: %s\n", reason);
+    kprintf("Address: 0x%016llx\n\n", addr);
     
     // Print backtrace
     print_backtrace();
