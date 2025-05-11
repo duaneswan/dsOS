@@ -7,373 +7,384 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Boot logo dimensions and properties
-#define LOGO_MAX_WIDTH     640
-#define LOGO_MAX_HEIGHT    480
-#define PNG_HEADER_SIZE    8
-#define PNG_SIGNATURE      "\x89PNG\r\n\x1a\n"
-
-// Logo state variables
-static uint8_t* logo_data = NULL;
-static uint32_t logo_width = 0;
-static uint32_t logo_height = 0;
-static uint32_t* framebuffer = NULL;
-static uint32_t fb_width = 0;
-static uint32_t fb_height = 0;
-static uint32_t fb_pitch = 0;
-static bool logo_loaded = false;
-
-// PNG chunk types
-#define PNG_CHUNK_IHDR     0x49484452  // "IHDR"
-#define PNG_CHUNK_IDAT     0x49444154  // "IDAT"
-#define PNG_CHUNK_IEND     0x49454E44  // "IEND"
-
-// PNG color types
-#define PNG_COLOR_GRAYSCALE       0
-#define PNG_COLOR_RGB             2
-#define PNG_COLOR_PALETTE         3
-#define PNG_COLOR_GRAYSCALE_ALPHA 4
-#define PNG_COLOR_RGBA            6
-
-// PNG structure definitions
+// Boot logo structure
 typedef struct {
-    uint32_t width;
-    uint32_t height;
-    uint8_t bit_depth;
-    uint8_t color_type;
-    uint8_t compression;
-    uint8_t filter;
-    uint8_t interlace;
-} png_ihdr_t;
+    uint32_t width;           // Logo width in pixels
+    uint32_t height;          // Logo height in pixels
+    uint32_t bpp;             // Bits per pixel (should be 32)
+    uint32_t* framebuffer;    // Pointer to framebuffer (set during init)
+    uint32_t* image_data;     // Pointer to logo image data
+    uint32_t fb_width;        // Framebuffer width in pixels
+    uint32_t fb_height;       // Framebuffer height in pixels
+    bool initialized;         // Whether boot logo is initialized
+} boot_logo_t;
 
-typedef struct {
-    uint32_t length;
-    uint32_t type;
-    uint8_t* data;
-    uint32_t crc;
-} png_chunk_t;
+// Single global instance of boot logo
+static boot_logo_t boot_logo = {
+    .width = 0,
+    .height = 0,
+    .bpp = 32,
+    .framebuffer = NULL,
+    .image_data = NULL,
+    .fb_width = 0,
+    .fb_height = 0,
+    .initialized = false
+};
+
+// Logo position
+static uint32_t logo_x = 0;
+static uint32_t logo_y = 0;
+
+// Forward declarations
+static bool decode_png(const uint8_t* png_data, size_t png_size);
+static void blend_pixel(uint32_t* dest, uint32_t src);
 
 /**
- * @brief Swap endianness of a 32-bit value
+ * @brief Initialize the boot logo
+ * 
+ * This function loads and decodes the boot logo image
  */
-static uint32_t swap32(uint32_t value) {
-    return ((value & 0xFF) << 24) | 
-           ((value & 0xFF00) << 8) | 
-           ((value & 0xFF0000) >> 8) | 
-           ((value & 0xFF000000) >> 24);
+void boot_logo_init(void) {
+    // We'll embed the logo directly in the kernel binary
+    extern uint8_t _binary_dsOS_png_start[];
+    extern uint8_t _binary_dsOS_png_end[];
+    extern uint32_t _binary_dsOS_png_size;
+    
+    // Calculate logo size
+    size_t logo_size = (size_t)(_binary_dsOS_png_end - _binary_dsOS_png_start);
+    
+    kprintf("Boot logo: Loading dsOS logo (size: %u bytes)\n", logo_size);
+    
+    // Decode the PNG image
+    if (!decode_png(_binary_dsOS_png_start, logo_size)) {
+        kprintf("Boot logo: Failed to decode PNG image\n");
+        return;
+    }
+    
+    // Mark as initialized
+    boot_logo.initialized = true;
+    
+    kprintf("Boot logo: Initialized (%ux%u)\n", boot_logo.width, boot_logo.height);
 }
 
 /**
- * @brief Read a 32-bit value from a buffer with big-endian conversion
- */
-static uint32_t read_uint32(const uint8_t* buffer) {
-    return (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
-}
-
-/**
- * @brief Simple PNG decoder (only handles raw RGBA for simplicity)
+ * @brief Set the framebuffer for the boot logo
  * 
- * This is a very simplified decoder that assumes:
- * - The PNG is in RGBA format (color_type 6)
- * - No compression (we're embedding the raw data for boot logo)
- * - No interlacing
- * 
- * For a real OS, this would be replaced with a proper PNG decoder.
+ * @param framebuffer Pointer to framebuffer
+ * @param width Framebuffer width in pixels
+ * @param height Framebuffer height in pixels
+ * @param bpp Bits per pixel
+ * @return true if successful, false otherwise
  */
-static bool decode_png(const uint8_t* data, uint32_t size) {
-    // Check PNG signature
-    if (size < PNG_HEADER_SIZE || memcmp(data, PNG_SIGNATURE, PNG_HEADER_SIZE) != 0) {
-        kprintf("BOOT_LOGO: Invalid PNG signature\n");
+bool boot_logo_set_framebuffer(void* framebuffer, uint32_t width, uint32_t height, uint32_t bpp) {
+    if (!boot_logo.initialized) {
         return false;
     }
     
-    // Parse PNG chunks
-    uint32_t offset = PNG_HEADER_SIZE;
-    png_ihdr_t ihdr;
-    bool has_ihdr = false;
-    
-    while (offset + 12 <= size) {
-        uint32_t chunk_length = read_uint32(&data[offset]);
-        uint32_t chunk_type = read_uint32(&data[offset + 4]);
-        
-        // Ensure we don't read beyond buffer
-        if (offset + 12 + chunk_length > size) {
-            kprintf("BOOT_LOGO: Truncated PNG chunk\n");
-            return false;
-        }
-        
-        // Process chunk based on type
-        switch (chunk_type) {
-            case PNG_CHUNK_IHDR:
-                if (chunk_length != 13) {
-                    kprintf("BOOT_LOGO: Invalid IHDR chunk size\n");
-                    return false;
-                }
-                
-                // Parse IHDR data
-                ihdr.width = read_uint32(&data[offset + 8]);
-                ihdr.height = read_uint32(&data[offset + 12]);
-                ihdr.bit_depth = data[offset + 16];
-                ihdr.color_type = data[offset + 17];
-                ihdr.compression = data[offset + 18];
-                ihdr.filter = data[offset + 19];
-                ihdr.interlace = data[offset + 20];
-                
-                has_ihdr = true;
-                
-                // Check restrictions for our simple decoder
-                if (ihdr.color_type != PNG_COLOR_RGBA || ihdr.bit_depth != 8 ||
-                    ihdr.compression != 0 || ihdr.filter != 0 || ihdr.interlace != 0) {
-                    kprintf("BOOT_LOGO: Unsupported PNG format\n");
-                    return false;
-                }
-                
-                // Check dimensions
-                if (ihdr.width > LOGO_MAX_WIDTH || ihdr.height > LOGO_MAX_HEIGHT) {
-                    kprintf("BOOT_LOGO: PNG dimensions too large\n");
-                    return false;
-                }
-                
-                // Allocate memory for logo data
-                logo_data = kmalloc(ihdr.width * ihdr.height * 4);
-                if (logo_data == NULL) {
-                    kprintf("BOOT_LOGO: Failed to allocate memory\n");
-                    return false;
-                }
-                
-                logo_width = ihdr.width;
-                logo_height = ihdr.height;
-                break;
-                
-            case PNG_CHUNK_IDAT:
-                if (!has_ihdr || logo_data == NULL) {
-                    kprintf("BOOT_LOGO: IDAT chunk before IHDR\n");
-                    return false;
-                }
-                
-                // For our simple boot logo, we're assuming raw RGBA data
-                // Copy the raw pixel data (simplified for boot logo only)
-                memcpy(logo_data, &data[offset + 8], chunk_length);
-                break;
-                
-            case PNG_CHUNK_IEND:
-                // End of PNG file
-                if (!has_ihdr || logo_data == NULL) {
-                    kprintf("BOOT_LOGO: Invalid PNG structure\n");
-                    return false;
-                }
-                
-                return true;
-                
-            default:
-                // Skip unknown chunks
-                break;
-        }
-        
-        // Move to next chunk
-        offset += 12 + chunk_length;
+    if (bpp != 32) {
+        kprintf("Boot logo: Unsupported BPP (%u), expected 32\n", bpp);
+        return false;
     }
     
-    kprintf("BOOT_LOGO: No IEND chunk found\n");
-    return false;
+    boot_logo.framebuffer = (uint32_t*)framebuffer;
+    boot_logo.fb_width = width;
+    boot_logo.fb_height = height;
+    
+    // Calculate logo position (centered)
+    logo_x = (width - boot_logo.width) / 2;
+    logo_y = (height - boot_logo.height) / 2;
+    
+    kprintf("Boot logo: Framebuffer set (%ux%u @ %u BPP)\n", width, height, bpp);
+    return true;
 }
 
 /**
- * @brief Center the logo on screen
+ * @brief Show the boot logo on the framebuffer
+ * 
+ * This function draws the logo on the framebuffer
  */
-static void center_logo(uint32_t* dest, uint32_t* src) {
-    uint32_t start_x = (fb_width - logo_width) / 2;
-    uint32_t start_y = (fb_height - logo_height) / 2;
+void boot_logo_show(void) {
+    if (!boot_logo.initialized || boot_logo.framebuffer == NULL) {
+        return;
+    }
     
-    for (uint32_t y = 0; y < logo_height; y++) {
-        for (uint32_t x = 0; x < logo_width; x++) {
-            uint32_t fb_pos = (start_y + y) * (fb_pitch / 4) + start_x + x;
-            uint32_t logo_pos = y * logo_width + x;
+    for (uint32_t y = 0; y < boot_logo.height; y++) {
+        for (uint32_t x = 0; x < boot_logo.width; x++) {
+            uint32_t fb_pos = (y + logo_y) * boot_logo.fb_width + (x + logo_x);
+            uint32_t logo_pos = y * boot_logo.width + x;
             
-            if (fb_pos < (fb_height * (fb_pitch / 4)) && logo_pos < (logo_width * logo_height)) {
-                dest[fb_pos] = src[logo_pos];
+            // Make sure we don't write outside the framebuffer
+            if (fb_pos < boot_logo.fb_width * boot_logo.fb_height) {
+                boot_logo.framebuffer[fb_pos] = boot_logo.image_data[logo_pos];
             }
         }
     }
 }
 
 /**
- * @brief Initialize boot logo system
+ * @brief Blend a pixel with alpha transparency
+ * 
+ * @param dest Destination pixel
+ * @param src Source pixel with alpha
  */
-void boot_logo_init(void) {
-    // Get framebuffer information from video driver
-    framebuffer = (uint32_t*)gfx_get_framebuffer();
+static void blend_pixel(uint32_t* dest, uint32_t src) {
+    // Extract components
+    uint8_t src_r = (src >> 16) & 0xFF;
+    uint8_t src_g = (src >> 8) & 0xFF;
+    uint8_t src_b = src & 0xFF;
+    uint8_t src_a = (src >> 24) & 0xFF;
     
-    if (framebuffer == NULL) {
-        kprintf("BOOT_LOGO: No framebuffer available\n");
-        return;
-    }
+    uint8_t dest_r = (*dest >> 16) & 0xFF;
+    uint8_t dest_g = (*dest >> 8) & 0xFF;
+    uint8_t dest_b = *dest & 0xFF;
     
-    // Get framebuffer dimensions
-    fb_width = 800;   // Assuming default resolution, would be set by gfx_get_width()
-    fb_height = 600;  // Assuming default resolution, would be set by gfx_get_height()
-    fb_pitch = fb_width * 4;  // Bytes per scanline, would be set by gfx_get_pitch()
+    // Simplified alpha blending
+    uint8_t out_r = ((src_r * src_a) + (dest_r * (255 - src_a))) / 255;
+    uint8_t out_g = ((src_g * src_a) + (dest_g * (255 - src_a))) / 255;
+    uint8_t out_b = ((src_b * src_a) + (dest_b * (255 - src_a))) / 255;
     
-    // Load the embedded logo
-    // In a real implementation, this would load from a file
-    // For this example, we'll use a placeholder
-    extern uint8_t _binary_dsos_png_start[];
-    extern uint8_t _binary_dsos_png_end[];
-    extern uint32_t _binary_dsos_png_size;
-    
-    uint8_t* logo_file = _binary_dsos_png_start;
-    uint32_t logo_size = (uint32_t)(_binary_dsos_png_end - _binary_dsos_png_start);
-    
-    if (decode_png(logo_file, logo_size)) {
-        logo_loaded = true;
-        kprintf("BOOT_LOGO: Loaded %dx%d logo\n", logo_width, logo_height);
-    } else {
-        kprintf("BOOT_LOGO: Failed to load logo\n");
-    }
-}
-
-/**
- * @brief Display the boot logo
- */
-void boot_logo_show(void) {
-    if (!logo_loaded || framebuffer == NULL) {
-        return;
-    }
-    
-    // Copy logo to framebuffer
-    center_logo(framebuffer, (uint32_t*)logo_data);
-    
-    // Swap buffers to display
-    gfx_swap_buffers();
-}
-
-/**
- * @brief Apply alpha blending between two colors
- */
-static uint32_t blend_color(uint32_t c1, uint32_t c2, uint8_t alpha) {
-    uint8_t r1 = (c1 >> 16) & 0xFF;
-    uint8_t g1 = (c1 >> 8) & 0xFF;
-    uint8_t b1 = c1 & 0xFF;
-    
-    uint8_t r2 = (c2 >> 16) & 0xFF;
-    uint8_t g2 = (c2 >> 8) & 0xFF;
-    uint8_t b2 = c2 & 0xFF;
-    
-    uint8_t r = (r1 * (255 - alpha) + r2 * alpha) / 255;
-    uint8_t g = (g1 * (255 - alpha) + g2 * alpha) / 255;
-    uint8_t b = (b1 * (255 - alpha) + b2 * alpha) / 255;
-    
-    return (r << 16) | (g << 8) | b;
+    // Final pixel
+    *dest = (out_r << 16) | (out_g << 8) | out_b;
 }
 
 /**
  * @brief Fade in the boot logo
  * 
- * @param duration_ms Duration of fade effect in milliseconds
+ * @param duration_ms Duration of fade in milliseconds
  */
 void boot_logo_fade_in(uint32_t duration_ms) {
-    if (!logo_loaded || framebuffer == NULL) {
+    if (!boot_logo.initialized || boot_logo.framebuffer == NULL) {
         return;
     }
     
-    uint32_t* temp_buffer = kmalloc(fb_height * fb_pitch);
-    if (temp_buffer == NULL) {
-        kprintf("BOOT_LOGO: Failed to allocate temporary buffer for fade effect\n");
+    // First, create a black framebuffer
+    for (uint32_t i = 0; i < boot_logo.fb_width * boot_logo.fb_height; i++) {
+        boot_logo.framebuffer[i] = 0;
+    }
+    
+    // Number of steps for the fade effect
+    const uint32_t steps = 20;
+    uint32_t step_delay = duration_ms / steps;
+    
+    // Temporary buffer for the logo with varying alpha
+    uint32_t* temp_logo = kmalloc(boot_logo.width * boot_logo.height * sizeof(uint32_t));
+    if (temp_logo == NULL) {
+        // If allocation fails, just show the logo without fading
+        boot_logo_show();
         return;
     }
     
-    // Clear temp buffer to black
-    memset(temp_buffer, 0, fb_height * fb_pitch);
-    
-    // Copy logo to temp buffer
-    center_logo(temp_buffer, (uint32_t*)logo_data);
-    
-    // Calculate frames and timing
-    uint32_t frames = duration_ms / 16;  // ~60 FPS
-    if (frames < 10) frames = 10;        // Minimum 10 frames for smooth fade
-    
-    // Perform fade-in
-    for (uint32_t i = 0; i <= frames; i++) {
-        uint8_t alpha = (i * 255) / frames;
+    // Perform fade in
+    for (uint32_t step = 0; step <= steps; step++) {
+        // Calculate alpha for this step
+        uint8_t alpha = (step * 255) / steps;
         
-        // Apply alpha blending
-        for (uint32_t y = 0; y < fb_height; y++) {
-            for (uint32_t x = 0; x < fb_width; x++) {
-                uint32_t pos = y * (fb_pitch / 4) + x;
-                framebuffer[pos] = blend_color(0, temp_buffer[pos], alpha);
+        // Update temporary logo with current alpha
+        for (uint32_t i = 0; i < boot_logo.width * boot_logo.height; i++) {
+            uint32_t pixel = boot_logo.image_data[i];
+            uint8_t pixel_alpha = (pixel >> 24) & 0xFF;
+            
+            // Scale pixel alpha by current global alpha
+            uint8_t new_alpha = (pixel_alpha * alpha) / 255;
+            uint32_t new_pixel = (pixel & 0x00FFFFFF) | (new_alpha << 24);
+            
+            temp_logo[i] = new_pixel;
+        }
+        
+        // Draw the logo with current alpha
+        for (uint32_t y = 0; y < boot_logo.height; y++) {
+            for (uint32_t x = 0; x < boot_logo.width; x++) {
+                uint32_t fb_pos = (y + logo_y) * boot_logo.fb_width + (x + logo_x);
+                uint32_t logo_pos = y * boot_logo.width + x;
+                
+                // Make sure we don't write outside the framebuffer
+                if (fb_pos < boot_logo.fb_width * boot_logo.fb_height) {
+                    // Blend pixel
+                    blend_pixel(&boot_logo.framebuffer[fb_pos], temp_logo[logo_pos]);
+                }
             }
         }
         
-        // Update display
-        gfx_swap_buffers();
-        
-        // Small delay between frames
-        // In a real OS, this would use a timer or scheduler
-        for (volatile int j = 0; j < 100000; j++) {}
+        // Wait for the next step
+        timer_wait_ms(step_delay);
     }
     
-    kfree(temp_buffer);
+    // Free temporary buffer
+    kfree(temp_logo);
 }
 
 /**
  * @brief Fade out the boot logo
  * 
- * @param duration_ms Duration of fade effect in milliseconds
+ * @param duration_ms Duration of fade in milliseconds
  */
 void boot_logo_fade_out(uint32_t duration_ms) {
-    if (!logo_loaded || framebuffer == NULL) {
+    if (!boot_logo.initialized || boot_logo.framebuffer == NULL) {
         return;
     }
     
-    // Save current framebuffer content
-    uint32_t* temp_buffer = kmalloc(fb_height * fb_pitch);
-    if (temp_buffer == NULL) {
-        kprintf("BOOT_LOGO: Failed to allocate temporary buffer for fade effect\n");
+    // Number of steps for the fade effect
+    const uint32_t steps = 20;
+    uint32_t step_delay = duration_ms / steps;
+    
+    // Temporary buffer to store the current framebuffer
+    uint32_t* saved_fb = kmalloc(boot_logo.fb_width * boot_logo.fb_height * sizeof(uint32_t));
+    if (saved_fb == NULL) {
+        // If allocation fails, just clear the framebuffer
+        for (uint32_t i = 0; i < boot_logo.fb_width * boot_logo.fb_height; i++) {
+            boot_logo.framebuffer[i] = 0;
+        }
         return;
     }
     
-    // Copy current framebuffer to temp buffer
-    memcpy(temp_buffer, framebuffer, fb_height * fb_pitch);
+    // Save the current framebuffer
+    for (uint32_t i = 0; i < boot_logo.fb_width * boot_logo.fb_height; i++) {
+        saved_fb[i] = boot_logo.framebuffer[i];
+    }
     
-    // Calculate frames and timing
-    uint32_t frames = duration_ms / 16;  // ~60 FPS
-    if (frames < 10) frames = 10;        // Minimum 10 frames for smooth fade
-    
-    // Perform fade-out
-    for (uint32_t i = 0; i <= frames; i++) {
-        uint8_t alpha = 255 - (i * 255) / frames;
+    // Perform fade out
+    for (uint32_t step = steps; step > 0; step--) {
+        // Calculate alpha for this step
+        uint8_t alpha = (step * 255) / steps;
         
-        // Apply alpha blending
-        for (uint32_t y = 0; y < fb_height; y++) {
-            for (uint32_t x = 0; x < fb_width; x++) {
-                uint32_t pos = y * (fb_pitch / 4) + x;
-                framebuffer[pos] = blend_color(0, temp_buffer[pos], alpha);
+        // Fade the entire framebuffer by alpha
+        for (uint32_t i = 0; i < boot_logo.fb_width * boot_logo.fb_height; i++) {
+            uint32_t pixel = saved_fb[i];
+            uint8_t r = (pixel >> 16) & 0xFF;
+            uint8_t g = (pixel >> 8) & 0xFF;
+            uint8_t b = pixel & 0xFF;
+            
+            // Scale RGB by current alpha
+            r = (r * alpha) / 255;
+            g = (g * alpha) / 255;
+            b = (b * alpha) / 255;
+            
+            boot_logo.framebuffer[i] = (r << 16) | (g << 8) | b;
+        }
+        
+        // Wait for the next step
+        timer_wait_ms(step_delay);
+    }
+    
+    // Clear the framebuffer completely
+    for (uint32_t i = 0; i < boot_logo.fb_width * boot_logo.fb_height; i++) {
+        boot_logo.framebuffer[i] = 0;
+    }
+    
+    // Free temporary buffer
+    kfree(saved_fb);
+}
+
+/**
+ * @brief Simple PNG decoder implementation
+ * 
+ * This function parses embedded PNG data and decodes it into a raw RGBA format
+ * 
+ * @param png_data Pointer to PNG data
+ * @param png_size Size of PNG data in bytes
+ * @return true if successful, false otherwise
+ */
+static bool decode_png(const uint8_t* png_data, size_t png_size) {
+    // In a real implementation, we'd include a proper PNG decoder library here
+    // Since we don't want to pull in external dependencies, we'll create a simplified
+    // decoder that assumes our PNG is in a specific format we can handle
+    
+    // For dsOS, we'll implement a basic PNG decoder that works with our specific logo
+    // This isn't a complete PNG decoder; it's just enough to handle our single logo file
+    
+    // Check PNG signature
+    static const uint8_t png_signature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    if (png_size < 8 || memcmp(png_data, png_signature, 8) != 0) {
+        kprintf("Boot logo: Invalid PNG signature\n");
+        return false;
+    }
+    
+    // Parse PNG chunks
+    uint32_t pos = 8;  // Skip signature
+    
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint8_t* image_data = NULL;
+    
+    while (pos + 12 < png_size) {
+        // Read chunk length and type
+        uint32_t chunk_length = (png_data[pos] << 24) | (png_data[pos + 1] << 16) |
+                               (png_data[pos + 2] << 8) | png_data[pos + 3];
+        uint32_t chunk_type = (png_data[pos + 4] << 24) | (png_data[pos + 5] << 16) |
+                             (png_data[pos + 6] << 8) | png_data[pos + 7];
+        
+        pos += 8;  // Move past length and type
+        
+        // Check for IHDR chunk (must be first)
+        if (chunk_type == 0x49484452) {  // "IHDR"
+            if (chunk_length != 13) {
+                kprintf("Boot logo: Invalid IHDR chunk\n");
+                return false;
+            }
+            
+            // Read image dimensions
+            width = (png_data[pos] << 24) | (png_data[pos + 1] << 16) |
+                    (png_data[pos + 2] << 8) | png_data[pos + 3];
+            height = (png_data[pos + 4] << 24) | (png_data[pos + 5] << 16) |
+                     (png_data[pos + 6] << 8) | png_data[pos + 7];
+            
+            uint8_t bit_depth = png_data[pos + 8];
+            uint8_t color_type = png_data[pos + 9];
+            uint8_t compression = png_data[pos + 10];
+            uint8_t filter = png_data[pos + 11];
+            uint8_t interlace = png_data[pos + 12];
+            
+            // Check for supported format (8-bit RGBA)
+            if (bit_depth != 8 || color_type != 6 || compression != 0 || 
+                filter != 0 || interlace != 0) {
+                kprintf("Boot logo: Unsupported PNG format (depth=%u, color=%u, comp=%u, filter=%u, interlace=%u)\n",
+                        bit_depth, color_type, compression, filter, interlace);
+                return false;
+            }
+        }
+        // Check for IDAT chunk (image data)
+        else if (chunk_type == 0x49444154) {  // "IDAT"
+            // In a real implementation, we'd handle compressed image data here
+            // For simplicity, we'll assume the data is already uncompressed RGBA
+            // and just copy it directly
+            
+            // Allocate memory for image data
+            if (image_data == NULL) {
+                boot_logo.width = width;
+                boot_logo.height = height;
+                boot_logo.bpp = 32;
+                boot_logo.image_data = kmalloc(width * height * 4);
+                
+                if (boot_logo.image_data == NULL) {
+                    kprintf("Boot logo: Failed to allocate memory for image data\n");
+                    return false;
+                }
+                
+                // Copy image data (simplified approach)
+                memcpy(boot_logo.image_data, png_data + pos, chunk_length);
             }
         }
         
-        // Update display
-        gfx_swap_buffers();
-        
-        // Small delay between frames
-        // In a real OS, this would use a timer or scheduler
-        for (volatile int j = 0; j < 100000; j++) {}
+        // Move to next chunk (skip CRC)
+        pos += chunk_length + 4;
     }
     
-    // Clear screen to black after fade-out
-    memset(framebuffer, 0, fb_height * fb_pitch);
-    gfx_swap_buffers();
+    // Check if we read the image dimensions and data
+    if (width == 0 || height == 0 || boot_logo.image_data == NULL) {
+        kprintf("Boot logo: Missing required PNG chunks\n");
+        return false;
+    }
     
-    kfree(temp_buffer);
+    return true;
 }
 
 /**
  * @brief Clean up boot logo resources
  */
 void boot_logo_cleanup(void) {
-    if (logo_data != NULL) {
-        kfree(logo_data);
-        logo_data = NULL;
+    if (boot_logo.initialized && boot_logo.image_data != NULL) {
+        kfree(boot_logo.image_data);
+        boot_logo.image_data = NULL;
+        boot_logo.initialized = false;
     }
-    
-    logo_loaded = false;
 }
