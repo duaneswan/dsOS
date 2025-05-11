@@ -3,7 +3,7 @@
  * @brief Interrupt Descriptor Table (IDT) implementation
  */
 
-#include <kernel.h>
+#include "../../include/kernel.h"
 #include <stdint.h>
 
 // IDT entry structure
