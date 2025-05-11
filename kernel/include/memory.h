@@ -7,59 +7,42 @@
 #define _MEMORY_H
 
 #include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /**
- * @brief Physical memory page size
+ * @brief Memory constants
  */
-#define PAGE_SIZE 4096
+#define PAGE_SIZE           4096     // 4KB page size
+#define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000 // Higher-half kernel
 
 /**
- * @brief Virtual memory addresses
+ * @brief Memory region types
  */
-#define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000
-
-/**
- * @brief Page table entry flags
- */
-#define PTE_PRESENT     (1ULL << 0)  // Page is present
-#define PTE_WRITABLE    (1ULL << 1)  // Page is writable
-#define PTE_USER        (1ULL << 2)  // Page is accessible from userspace
-#define PTE_WRITETHROUGH (1ULL << 3) // Page uses write-through caching
-#define PTE_CACHE_DISABLE (1ULL << 4) // Page cache is disabled
-#define PTE_ACCESSED    (1ULL << 5)  // Page has been accessed
-#define PTE_DIRTY       (1ULL << 6)  // Page has been written to
-#define PTE_PAGESIZE    (1ULL << 7)  // Page is a large page (2MB/1GB)
-#define PTE_GLOBAL      (1ULL << 8)  // Page is global (no TLB flush on CR3 change)
-#define PTE_NX          (1ULL << 63) // No-execute
-
-/**
- * @brief Memory region type
- */
-typedef enum {
-    MEMORY_FREE,            // Free memory, available for use
-    MEMORY_RESERVED,        // Reserved by system, do not use
-    MEMORY_ACPI_RECLAIMABLE, // ACPI tables that can be reclaimed
-    MEMORY_NVS,             // ACPI NVS memory
-    MEMORY_BADRAM,          // Bad RAM, do not use
-    MEMORY_KERNEL,          // Used by kernel
-    MEMORY_MODULES,         // Used by kernel modules
-    MEMORY_FRAMEBUFFER      // Used by framebuffer
-} memory_type_t;
+#define MEMORY_FREE         1       // Free memory
+#define MEMORY_RESERVED     2       // Reserved memory
+#define MEMORY_ACPI         3       // ACPI reclaimable memory
+#define MEMORY_NVS          4       // ACPI NVS memory
+#define MEMORY_BADRAM       5       // Bad RAM
+#define MEMORY_KERNEL       6       // Kernel memory
+#define MEMORY_MODULES      7       // Loaded modules
 
 /**
  * @brief Memory region descriptor
  */
-typedef struct {
-    uint64_t base;          // Base physical address
-    uint64_t size;          // Size in bytes
-    memory_type_t type;     // Type of memory region
+typedef struct memory_region {
+    uintptr_t base;                // Base physical address
+    uintptr_t size;                // Size in bytes
+    uint32_t type;                 // Region type
+    uint32_t reserved;             // Reserved (for alignment)
 } memory_region_t;
 
 /**
- * @brief Page frame allocator interface
+ * @brief Initialize memory management
+ * 
+ * @param mem_upper Upper memory size in KB from multiboot info
  */
+void mm_init(uintptr_t mem_upper);
 
 /**
  * @brief Allocate a physical page frame
@@ -106,10 +89,6 @@ size_t mm_get_total_pages(void);
 size_t mm_get_free_pages(void);
 
 /**
- * @brief Virtual memory management interface
- */
-
-/**
  * @brief Map a physical page frame to a virtual address
  * 
  * @param phys Physical address to map
@@ -135,10 +114,42 @@ void vm_unmap_page(uintptr_t virt);
 uintptr_t vm_get_phys(uintptr_t virt);
 
 /**
- * @brief Initialize the memory management subsystem
- * 
- * @param mem_upper Upper memory size in KB from multiboot info
+ * @brief Page table entry flags
  */
-void mm_init(uintptr_t mem_upper);
+#define PTE_PRESENT       0x001     // Page is present
+#define PTE_WRITABLE      0x002     // Page is writable
+#define PTE_USER          0x004     // Page is accessible from user mode
+#define PTE_PWT           0x008     // Page write-through
+#define PTE_PCD           0x010     // Page cache disabled
+#define PTE_ACCESSED      0x020     // Page was accessed
+#define PTE_DIRTY         0x040     // Page was written to
+#define PTE_PS            0x080     // Page size (if set, 2MB or 1GB page)
+#define PTE_GLOBAL        0x100     // Page is global (not flushed in TLB)
+#define PTE_NX            0x8000000000000000ULL // No execute
+
+/**
+ * @brief kernel heap functions 
+ */
+
+// Initialize the kernel heap
+void heap_init(uintptr_t start, size_t size);
+
+// Allocate memory from the kernel heap
+void* kmalloc(size_t size);
+
+// Allocate aligned memory from the kernel heap
+void* kmalloc_aligned(size_t size, size_t alignment);
+
+// Free memory allocated from the kernel heap
+void kfree(void* ptr);
+
+// Reallocate memory from the kernel heap
+void* krealloc(void* ptr, size_t size);
+
+// Get the size of an allocated block
+size_t ksize(void* ptr);
+
+// Debug function to print heap statistics
+void heap_stats(void);
 
 #endif /* _MEMORY_H */
