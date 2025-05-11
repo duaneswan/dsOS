@@ -197,6 +197,12 @@ static inline void wbinvd(void) {
     __asm__ volatile("wbinvd");
 }
 
+static inline uint64_t read_flags(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0" : "=r"(flags));
+    return flags;
+}
+
 /**
  * @brief Panic-related definitions
  */
