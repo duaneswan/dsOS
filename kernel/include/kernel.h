@@ -197,14 +197,19 @@ static inline void wbinvd(void) {
 #define PANIC_CRITICAL  1
 #define PANIC_HOS_BREACH 2
 
-void panic(const char* file, int line, registers_t* regs, const char* fmt, ...) NORETURN;
-void assertion_failed(const char* file, int line, const char* expr);
-void hos_breach(const char* type, uint64_t address, registers_t* regs) NORETURN;
+// Printf output modes
+#define PRINTF_MODE_CONSOLE  0   // Output to console (VGA)
+#define PRINTF_MODE_SERIAL   1   // Output to serial port
+#define PRINTF_MODE_BOTH     2   // Output to console and serial port
+
+void panic(const char* file, int line, const char* fmt, ...) NORETURN;
+void kassertf(bool condition, const char* file, int line, const char* fmt, ...) NORETURN;
+void hos_breach(const char* file, int line, const char* reason, void* regs) NORETURN;
 
 #define kassert(expr) \
     do { \
         if (!(expr)) { \
-            assertion_failed(__FILE__, __LINE__, #expr); \
+            kassertf(false, __FILE__, __LINE__, "Assertion failed: %s", #expr); \
         } \
     } while (0)
 
@@ -245,6 +250,8 @@ int kprintf(const char* fmt, ...);
 int vkprintf(const char* fmt, va_list args);
 int snprintf(char* buffer, size_t size, const char* fmt, ...);
 int vsnprintf(char* buffer, size_t size, const char* fmt, va_list args);
+void kprintf_set_mode(int mode);
+int kprintf_get_mode(void);
 
 /**
  * @brief VGA console functions (declared in vga.h)
@@ -354,6 +361,21 @@ KERNEL_API extern bool fb_ready;
 KERNEL_API extern bool kbd_ready;
 KERNEL_API extern bool graphics_mode;
 KERNEL_API extern uintptr_t kernel_end;
+
+/**
+ * @brief VGA/Terminal state
+ */
+KERNEL_API extern uint32_t terminal_row;
+KERNEL_API extern uint32_t terminal_column;
+
+/**
+ * @brief Framebuffer state
+ */
+KERNEL_API extern void* framebuffer_base;
+KERNEL_API extern uint32_t framebuffer_width;
+KERNEL_API extern uint32_t framebuffer_height;
+KERNEL_API extern uint32_t framebuffer_pitch;
+KERNEL_API extern uint32_t framebuffer_bpp;
 
 /**
  * @brief Global system resources
