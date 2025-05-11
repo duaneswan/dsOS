@@ -3,7 +3,7 @@
  * @brief Global Descriptor Table (GDT) implementation
  */
 
-#include <kernel.h>
+#include "../../include/kernel.h"
 #include <stdint.h>
 
 // GDT entry structure
