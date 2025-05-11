@@ -185,86 +185,87 @@ static bool serial_init_port(uint16_t port, uint16_t baud) {
 
 /**
  * @brief Initialize the serial port driver
+ * 
+ * @param port Base address of the serial port to initialize
  */
-void serial_init(void) {
-    // Try to initialize COM1 first
-    if (serial_init_port(SERIAL_COM1, SERIAL_BAUD_115200)) {
-        serial_port = SERIAL_COM1;
-        kprintf("SERIAL: Initialized COM1 at 115200 bps\n");
-    }
-    // If COM1 fails, try COM2
-    else if (serial_init_port(SERIAL_COM2, SERIAL_BAUD_115200)) {
-        serial_port = SERIAL_COM2;
-        kprintf("SERIAL: Initialized COM2 at 115200 bps\n");
-    }
-    // If both fail, report error
-    else {
-        kprintf("SERIAL: Failed to initialize any serial port\n");
+void serial_init(uint16_t port) {
+    // Initialize the specified port
+    if (serial_init_port(port, SERIAL_BAUD_115200)) {
+        serial_port = port;
+        kprintf("SERIAL: Initialized port 0x%x at 115200 bps\n", port);
+    } else {
+        kprintf("SERIAL: Failed to initialize port 0x%x\n", port);
         serial_port = 0;
     }
 }
 
 /**
- * @brief Write a character to the serial port
+ * @brief Write a byte to the serial port
  * 
- * @param c Character to write
+ * @param port Serial port base address
+ * @param byte Byte to write
  */
-void serial_write_char(char c) {
-    // If serial port is not initialized, do nothing
-    if (serial_port == 0) {
-        return;
-    }
-    
+void serial_write_byte(uint16_t port, uint8_t byte) {
     // Wait for the transmit buffer to be empty
-    while (!serial_transmit_empty(serial_port)) {
+    while (!serial_transmit_empty(port)) {
         io_wait();
     }
     
-    // Send the character
-    outb(serial_port + SERIAL_DATA, c);
-    
-    // If the character is a newline, also send a carriage return
-    if (c == '\n') {
-        serial_write_char('\r');
-    }
+    // Send the byte
+    outb(port + SERIAL_DATA, byte);
 }
 
 /**
- * @brief Read a character from the serial port
+ * @brief Read a byte from the serial port
  * 
- * @return Character read, or 0 if no data available
+ * @param port Serial port base address
+ * @return Byte read, or 0 if no data available
  */
-char serial_read_char(void) {
-    // If serial port is not initialized, return 0
-    if (serial_port == 0) {
-        return 0;
-    }
-    
+uint8_t serial_read_byte(uint16_t port) {
     // Check if data is available
-    if (!serial_data_ready(serial_port)) {
+    if (!serial_data_ready(port)) {
         return 0;
     }
     
-    // Read the character
-    return inb(serial_port + SERIAL_DATA);
+    // Read the byte
+    return inb(port + SERIAL_DATA);
 }
 
 /**
  * @brief Write a string to the serial port
  * 
+ * @param port Serial port base address
  * @param str String to write
  */
-void serial_write_string(const char* str) {
+void serial_write_str(uint16_t port, const char* str) {
     while (*str) {
-        serial_write_char(*str++);
+        serial_write_byte(port, *str);
+        
+        // If the character is a newline, also send a carriage return
+        if (*str == '\n') {
+            serial_write_byte(port, '\r');
+        }
+        
+        str++;
     }
 }
 
 /**
- * @brief Check if the serial port is initialized
+ * @brief Check if transmit buffer is empty
  * 
- * @return true if serial port is initialized, false otherwise
+ * @param port Serial port base address
+ * @return true if transmit buffer is empty, false otherwise
  */
-bool serial_is_initialized(void) {
-    return serial_port != 0;
+bool serial_is_transmit_empty(uint16_t port) {
+    return serial_transmit_empty(port);
+}
+
+/**
+ * @brief Check if serial port has received data
+ * 
+ * @param port Serial port base address
+ * @return true if data is available, false otherwise
+ */
+bool serial_has_received(uint16_t port) {
+    return serial_data_ready(port);
 }
