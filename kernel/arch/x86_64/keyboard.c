@@ -7,426 +7,340 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// IRQ lines (from pic.c)
-#define IRQ_TIMER         0           // Timer IRQ
-#define IRQ_KEYBOARD      1           // Keyboard IRQ
-#define IRQ_CASCADE       2           // Cascade IRQ (used internally by the PICs)
-#define IRQ_COM2          3           // COM2 IRQ
-#define IRQ_COM1          4           // COM1 IRQ
-#define IRQ_LPT2          5           // LPT2 IRQ
-#define IRQ_FLOPPY        6           // Floppy disk IRQ
-#define IRQ_LPT1          7           // LPT1 IRQ (spurious)
-#define IRQ_RTC           8           // Real-time clock IRQ
-#define IRQ_ACPI          9           // ACPI IRQ
-#define IRQ_AVAILABLE1    10          // Available IRQ
-#define IRQ_AVAILABLE2    11          // Available IRQ
-#define IRQ_PS2_MOUSE     12          // PS/2 mouse IRQ
-#define IRQ_FPU           13          // FPU IRQ
-#define IRQ_ATA_PRIMARY   14          // Primary ATA IRQ
-#define IRQ_ATA_SECONDARY 15          // Secondary ATA IRQ
+// Keyboard controller ports
+#define KB_DATA_PORT     0x60  // Data port (read/write)
+#define KB_STATUS_PORT   0x64  // Status register port (read)
+#define KB_COMMAND_PORT  0x64  // Command register port (write)
 
-// PIC interrupt offsets (from pic.c)
-#define PIC1_OFFSET       0x20        // Master PIC base interrupt number
-#define PIC2_OFFSET       0x28        // Slave PIC base interrupt number
+// Keyboard controller commands
+#define KB_CMD_READ_CONFIG      0x20  // Read configuration byte
+#define KB_CMD_WRITE_CONFIG     0x60  // Write configuration byte
+#define KB_CMD_DISABLE_FIRST    0xAD  // Disable first PS/2 port
+#define KB_CMD_ENABLE_FIRST     0xAE  // Enable first PS/2 port
+#define KB_CMD_DISABLE_SECOND   0xA7  // Disable second PS/2 port
+#define KB_CMD_ENABLE_SECOND    0xA8  // Enable second PS/2 port
+#define KB_CMD_TEST_FIRST       0xAB  // Test first PS/2 port
+#define KB_CMD_TEST_SECOND      0xA9  // Test second PS/2 port
+#define KB_CMD_TEST_CONTROLLER  0xAA  // Test keyboard controller
+#define KB_CMD_SYSTEM_RESET     0xFE  // System reset
 
-// PS/2 controller ports
-#define PS2_DATA_PORT         0x60    // Data port (read/write)
-#define PS2_STATUS_PORT       0x64    // Status register (read only)
-#define PS2_COMMAND_PORT      0x64    // Command register (write only)
+// Keyboard commands
+#define KB_CMD_RESET            0xFF  // Reset keyboard
+#define KB_CMD_ENABLE_SCANNING  0xF4  // Enable scanning (keyboard starts sending data)
+#define KB_CMD_DISABLE_SCANNING 0xF5  // Disable scanning
+#define KB_CMD_SET_DEFAULTS     0xF6  // Set default parameters
+#define KB_CMD_SET_TYPEMATIC    0xF3  // Set typematic rate/delay
 
-// PS/2 controller status register bits
-#define PS2_STATUS_OUTPUT     0x01    // Output buffer status (0 = empty, 1 = full)
-#define PS2_STATUS_INPUT      0x02    // Input buffer status (0 = empty, 1 = full)
-#define PS2_STATUS_SYSTEM     0x04    // System flag (0 = power on reset, 1 = diagnostic passed)
-#define PS2_STATUS_COMMAND    0x08    // Command/data (0 = data written to input was for PS/2 device, 1 = command written to input was for PS/2 controller)
-#define PS2_STATUS_TIMEOUT    0x40    // Timeout error
-#define PS2_STATUS_PARITY     0x80    // Parity error
+// Controller status bits
+#define KB_STATUS_OUTPUT_FULL   0x01  // Output buffer status (0 = empty, 1 = full)
+#define KB_STATUS_INPUT_FULL    0x02  // Input buffer status (0 = empty, 1 = full)
+#define KB_STATUS_SYSTEM_FLAG   0x04  // System flag (0 = power-on reset, 1 = self-test success)
+#define KB_STATUS_COMMAND_DATA  0x08  // Command/data (0 = data written to input buffer is data, 1 = command)
+#define KB_STATUS_TIMEOUT       0x40  // Timeout error
+#define KB_STATUS_PARITY_ERROR  0x80  // Parity error
 
-// PS/2 controller commands
-#define PS2_CMD_READ_CONFIG   0x20    // Read controller configuration byte
-#define PS2_CMD_WRITE_CONFIG  0x60    // Write controller configuration byte
-#define PS2_CMD_DISABLE_P2    0xA7    // Disable second PS/2 port
-#define PS2_CMD_ENABLE_P2     0xA8    // Enable second PS/2 port
-#define PS2_CMD_TEST_P2       0xA9    // Test second PS/2 port
-#define PS2_CMD_TEST_CTRL     0xAA    // Test PS/2 controller
-#define PS2_CMD_TEST_P1       0xAB    // Test first PS/2 port
-#define PS2_CMD_DISABLE_P1    0xAD    // Disable first PS/2 port
-#define PS2_CMD_ENABLE_P1     0xAE    // Enable first PS/2 port
+// Controller configuration bits
+#define KB_CONFIG_FIRST_INT     0x01  // First PS/2 port interrupt (IRQ1)
+#define KB_CONFIG_SECOND_INT    0x02  // Second PS/2 port interrupt (IRQ12)
+#define KB_CONFIG_SYSTEM_FLAG   0x04  // System flag
+#define KB_CONFIG_FIRST_CLOCK   0x10  // First PS/2 port clock (0 = disabled, 1 = enabled)
+#define KB_CONFIG_SECOND_CLOCK  0x20  // Second PS/2 port clock (0 = disabled, 1 = enabled)
+#define KB_CONFIG_FIRST_TRANS   0x40  // First PS/2 port translation (0 = disabled, 1 = enabled)
 
-// PS/2 device commands
-#define PS2_DEV_RESET         0xFF    // Reset device
-#define PS2_DEV_DISABLE_SCAN  0xF5    // Disable scanning
-#define PS2_DEV_ENABLE_SCAN   0xF4    // Enable scanning
-#define PS2_DEV_SET_DEFAULTS  0xF6    // Set default parameters
-#define PS2_DEV_SET_LEDS      0xED    // Set keyboard LEDs
+// Keyboard responses
+#define KB_RESPONSE_ACK         0xFA  // Command acknowledged
+#define KB_RESPONSE_RESEND      0xFE  // Resend last command (error)
+#define KB_RESPONSE_ERROR       0xFC  // Error (self-test failed)
 
-// Controller configuration byte bits
-#define PS2_CONFIG_P1_INT     0x01    // Enable interrupt for first PS/2 port
-#define PS2_CONFIG_P2_INT     0x02    // Enable interrupt for second PS/2 port
-#define PS2_CONFIG_SYSTEM     0x04    // System flag
-#define PS2_CONFIG_P1_CLOCK   0x10    // First PS/2 port clock (0 = enable, 1 = disable)
-#define PS2_CONFIG_P2_CLOCK   0x20    // Second PS/2 port clock (0 = enable, 1 = disable)
-#define PS2_CONFIG_P1_TRANS   0x40    // First PS/2 port translation (0 = disable, 1 = enable)
+// IRQ line for the keyboard
+#define KEYBOARD_IRQ            1
 
-// Keyboard LED bits
-#define KB_LED_SCROLL_LOCK    0x01    // Scroll Lock LED
-#define KB_LED_NUM_LOCK       0x02    // Num Lock LED
-#define KB_LED_CAPS_LOCK      0x04    // Caps Lock LED
+// Key states
+#define KEY_RELEASED            0x00
+#define KEY_PRESSED             0x01
+#define KEY_REPEATED            0x02
 
-// Keyboard special keys and modifiers
-#define KB_KEY_ESCAPE         0x01
-#define KB_KEY_BACKSPACE      0x0E
-#define KB_KEY_TAB            0x0F
-#define KB_KEY_ENTER          0x1C
-#define KB_KEY_CTRL           0x1D
-#define KB_KEY_LEFT_SHIFT     0x2A
-#define KB_KEY_RIGHT_SHIFT    0x36
-#define KB_KEY_ALT            0x38
-#define KB_KEY_CAPS_LOCK      0x3A
-#define KB_KEY_F1             0x3B
-#define KB_KEY_F2             0x3C
-#define KB_KEY_F3             0x3D
-#define KB_KEY_F4             0x3E
-#define KB_KEY_F5             0x3F
-#define KB_KEY_F6             0x40
-#define KB_KEY_F7             0x41
-#define KB_KEY_F8             0x42
-#define KB_KEY_F9             0x43
-#define KB_KEY_F10            0x44
-#define KB_KEY_F11            0x57
-#define KB_KEY_F12            0x58
-#define KB_KEY_NUM_LOCK       0x45
-#define KB_KEY_SCROLL_LOCK    0x46
+// Maximum size of keyboard buffer
+#define KB_BUFFER_SIZE          256
 
-// Extended key flag
-#define KB_EXTENDED_FLAG      0xE0
-
-// Keyboard state flags
-#define KB_STATE_SHIFT        0x01
-#define KB_STATE_CTRL         0x02
-#define KB_STATE_ALT          0x04
-#define KB_STATE_CAPS_LOCK    0x08
-#define KB_STATE_NUM_LOCK     0x10
-#define KB_STATE_SCROLL_LOCK  0x20
-#define KB_STATE_EXTENDED     0x40
-
-// Maximum number of keys that can be pressed simultaneously
-#define KB_MAX_PRESSED_KEYS   6
+// Keyboard buffer (circular)
+static uint8_t kb_buffer[KB_BUFFER_SIZE];
+static uint32_t kb_buffer_head = 0;
+static uint32_t kb_buffer_tail = 0;
 
 // Keyboard state
-static uint8_t kb_state = 0;
-static uint8_t kb_leds = 0;
-static uint8_t kb_pressed_keys[KB_MAX_PRESSED_KEYS] = {0};
-static uint8_t kb_pressed_count = 0;
+static bool kb_initialized = false;
+static bool num_lock = false;
+static bool caps_lock = false;
+static bool scroll_lock = false;
+static bool extended_key = false;
+static bool shift_pressed = false;
+static bool alt_pressed = false;
+static bool ctrl_pressed = false;
 
-// Default US QWERTY scancode to ASCII mapping (set 1)
-static const char kb_us_layout[128] = {
+// Key states (true = pressed, false = released)
+static bool key_states[256] = {0};
+
+// US QWERTY layout character mapping
+static const char kb_layout_lower[128] = {
     0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
     '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
     0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
     0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '-',
+    0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-// Shifted US layout
-static const char kb_us_shift_layout[128] = {
+static const char kb_layout_upper[128] = {
     0, 27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
     '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
     0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
     0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '-',
+    0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-// Numpad keys (when Num Lock is on)
-static const char kb_numpad_layout[16] = {
-    '7', '8', '9', '-',
-    '4', '5', '6', '+',
-    '1', '2', '3', '0',
-    '.', 0, 0, 0
+// Scancode to key name mapping
+static const char* key_names[128] = {
+    "UNKNOWN", "ESC", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "MINUS", "EQUAL", "BACKSPACE",
+    "TAB", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "LBRACKET", "RBRACKET", "ENTER",
+    "LCTRL", "A", "S", "D", "F", "G", "H", "J", "K", "L", "SEMICOLON", "APOSTROPHE", "BACKTICK",
+    "LSHIFT", "BACKSLASH", "Z", "X", "C", "V", "B", "N", "M", "COMMA", "PERIOD", "SLASH", "RSHIFT",
+    "KP_MULTIPLY", "LALT", "SPACE", "CAPSLOCK", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10",
+    "NUMLOCK", "SCROLLLOCK", "KP_7", "KP_8", "KP_9", "KP_MINUS", "KP_4", "KP_5", "KP_6", "KP_PLUS",
+    "KP_1", "KP_2", "KP_3", "KP_0", "KP_DECIMAL", "UNKNOWN", "UNKNOWN", "UNKNOWN", "F11", "F12"
 };
 
-// Keyboard callback function type
-typedef void (*kb_callback_t)(uint8_t scancode, char ascii);
+// Extended key scancode to key name mapping
+static const char* ext_key_names[128] = {
+    "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN",
+    "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN",
+    "PREV_TRACK", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN",
+    "UNKNOWN", "NEXT_TRACK", "UNKNOWN", "UNKNOWN", "KP_ENTER", "RCTRL", "UNKNOWN", "UNKNOWN",
+    "MUTE", "CALCULATOR", "PLAY", "UNKNOWN", "STOP", "UNKNOWN", "UNKNOWN", "UNKNOWN",
+    "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "VOL_DOWN", "UNKNOWN",
+    "VOL_UP", "UNKNOWN", "WWW_HOME", "UNKNOWN", "UNKNOWN", "KP_DIVIDE", "UNKNOWN", "PRTSCR",
+    "RALT", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN",
+    "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "PAUSE", "UNKNOWN", "HOME",
+    "UP", "PGUP", "UNKNOWN", "LEFT", "UNKNOWN", "RIGHT", "UNKNOWN", "END",
+    "DOWN", "PGDN", "INSERT", "DELETE", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"
+};
 
-// Keyboard callbacks
-static kb_callback_t kb_callback = NULL;
+// Forward declarations
+static bool kb_wait_for_output(void);
+static bool kb_wait_for_input(void);
+static bool kb_send_command(uint8_t command);
+static bool kb_send_data(uint8_t data);
+static uint8_t kb_read_data(void);
+static void kb_handle_scancode(uint8_t scancode);
+static void kb_update_leds(void);
+static bool kb_buffer_is_empty(void);
+static bool kb_buffer_is_full(void);
+static void kb_buffer_push(uint8_t scancode);
+static uint8_t kb_buffer_pop(void);
 
 /**
- * @brief Wait for the PS/2 controller to be ready for input
+ * @brief Wait for the keyboard controller output buffer to be full
  * 
- * @return true if ready, false if timeout
+ * @return true if buffer became full within timeout
  */
-static bool ps2_wait_input(void) {
-    for (int i = 0; i < 1000; i++) {
-        if ((inb(PS2_STATUS_PORT) & PS2_STATUS_INPUT) == 0) {
+static bool kb_wait_for_output(void) {
+    // Try for a reasonable amount of time
+    for (int i = 0; i < 0x10000; i++) {
+        if (inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) {
             return true;
         }
-        io_wait();
     }
     return false;
 }
 
 /**
- * @brief Wait for the PS/2 controller to have output data available
+ * @brief Wait for the keyboard controller input buffer to be empty
  * 
- * @return true if data available, false if timeout
+ * @return true if buffer became empty within timeout
  */
-static bool ps2_wait_output(void) {
-    for (int i = 0; i < 1000; i++) {
-        if (inb(PS2_STATUS_PORT) & PS2_STATUS_OUTPUT) {
+static bool kb_wait_for_input(void) {
+    // Try for a reasonable amount of time
+    for (int i = 0; i < 0x10000; i++) {
+        if (!(inb(KB_STATUS_PORT) & KB_STATUS_INPUT_FULL)) {
             return true;
         }
-        io_wait();
     }
     return false;
 }
 
 /**
- * @brief Send a command to the PS/2 controller
+ * @brief Send a command to the keyboard controller
  * 
- * @param command Command byte
- * @return true if successful, false if failed
+ * @param command Command to send
+ * @return true if command was sent successfully
  */
-static bool ps2_send_command(uint8_t command) {
-    if (!ps2_wait_input()) {
+static bool kb_send_command(uint8_t command) {
+    if (!kb_wait_for_input()) {
         return false;
     }
-    outb(PS2_COMMAND_PORT, command);
+    outb(KB_COMMAND_PORT, command);
     return true;
 }
 
 /**
- * @brief Send a command with data to the PS/2 controller
+ * @brief Send data to the keyboard
  * 
- * @param command Command byte
- * @param data Data byte
- * @return true if successful, false if failed
+ * @param data Data to send
+ * @return true if data was sent successfully
  */
-static bool ps2_send_command_data(uint8_t command, uint8_t data) {
-    if (!ps2_send_command(command)) {
+static bool kb_send_data(uint8_t data) {
+    if (!kb_wait_for_input()) {
         return false;
     }
-    if (!ps2_wait_input()) {
-        return false;
-    }
-    outb(PS2_DATA_PORT, data);
+    outb(KB_DATA_PORT, data);
     return true;
 }
 
 /**
- * @brief Send a byte to the PS/2 device (keyboard)
+ * @brief Read data from the keyboard
  * 
- * @param data Data byte
- * @return true if successful, false if failed
+ * @return Data read from the keyboard, or 0 if no data available
  */
-static bool ps2_write_device(uint8_t data) {
-    if (!ps2_wait_input()) {
-        return false;
+static uint8_t kb_read_data(void) {
+    if (!kb_wait_for_output()) {
+        return 0;
     }
-    outb(PS2_DATA_PORT, data);
-    if (!ps2_wait_output()) {
-        return false;
-    }
-    return (inb(PS2_DATA_PORT) == 0xFA); // ACK
+    return inb(KB_DATA_PORT);
 }
 
 /**
- * @brief Update keyboard LEDs based on lock key states
+ * @brief Check if the keyboard buffer is empty
+ * 
+ * @return true if buffer is empty
+ */
+static bool kb_buffer_is_empty(void) {
+    return kb_buffer_head == kb_buffer_tail;
+}
+
+/**
+ * @brief Check if the keyboard buffer is full
+ * 
+ * @return true if buffer is full
+ */
+static bool kb_buffer_is_full(void) {
+    return ((kb_buffer_head + 1) % KB_BUFFER_SIZE) == kb_buffer_tail;
+}
+
+/**
+ * @brief Push a scancode into the keyboard buffer
+ * 
+ * @param scancode Scancode to push
+ */
+static void kb_buffer_push(uint8_t scancode) {
+    if (kb_buffer_is_full()) {
+        return;  // Drop the key if buffer is full
+    }
+    
+    kb_buffer[kb_buffer_head] = scancode;
+    kb_buffer_head = (kb_buffer_head + 1) % KB_BUFFER_SIZE;
+}
+
+/**
+ * @brief Pop a scancode from the keyboard buffer
+ * 
+ * @return Scancode, or 0 if buffer is empty
+ */
+static uint8_t kb_buffer_pop(void) {
+    if (kb_buffer_is_empty()) {
+        return 0;
+    }
+    
+    uint8_t scancode = kb_buffer[kb_buffer_tail];
+    kb_buffer_tail = (kb_buffer_tail + 1) % KB_BUFFER_SIZE;
+    return scancode;
+}
+
+/**
+ * @brief Update keyboard LEDs based on lock states
  */
 static void kb_update_leds(void) {
+    // Calculate LED byte: bit 0 = scroll lock, bit 1 = num lock, bit 2 = caps lock
     uint8_t leds = 0;
+    if (scroll_lock) leds |= 1;
+    if (num_lock) leds |= 2;
+    if (caps_lock) leds |= 4;
     
-    if (kb_state & KB_STATE_SCROLL_LOCK) {
-        leds |= KB_LED_SCROLL_LOCK;
-    }
-    if (kb_state & KB_STATE_NUM_LOCK) {
-        leds |= KB_LED_NUM_LOCK;
-    }
-    if (kb_state & KB_STATE_CAPS_LOCK) {
-        leds |= KB_LED_CAPS_LOCK;
-    }
-    
-    if (kb_leds != leds) {
-        kb_leds = leds;
-        ps2_write_device(PS2_DEV_SET_LEDS);
-        ps2_write_device(kb_leds);
-    }
-}
-
-/**
- * @brief Add a key to the pressed keys array
- * 
- * @param scancode Key scancode
- */
-static void kb_add_pressed_key(uint8_t scancode) {
-    // Don't add modifiers or extended keys
-    if (scancode == KB_KEY_CTRL || scancode == KB_KEY_LEFT_SHIFT || 
-        scancode == KB_KEY_RIGHT_SHIFT || scancode == KB_KEY_ALT || 
-        scancode == KB_EXTENDED_FLAG) {
+    // Send LED update command
+    if (!kb_send_data(KB_CMD_SET_TYPEMATIC)) {
         return;
     }
     
-    // Check if key is already in the pressed keys array
-    for (int i = 0; i < kb_pressed_count; i++) {
-        if (kb_pressed_keys[i] == scancode) {
-            return;
-        }
-    }
-    
-    // Add key if there's room
-    if (kb_pressed_count < KB_MAX_PRESSED_KEYS) {
-        kb_pressed_keys[kb_pressed_count++] = scancode;
-    }
-}
-
-/**
- * @brief Remove a key from the pressed keys array
- * 
- * @param scancode Key scancode
- */
-static void kb_remove_pressed_key(uint8_t scancode) {
-    // Find key in pressed keys array
-    for (int i = 0; i < kb_pressed_count; i++) {
-        if (kb_pressed_keys[i] == scancode) {
-            // Remove key by shifting remaining keys
-            for (int j = i; j < kb_pressed_count - 1; j++) {
-                kb_pressed_keys[j] = kb_pressed_keys[j + 1];
-            }
-            kb_pressed_count--;
-            break;
-        }
-    }
-}
-
-/**
- * @brief Convert a scancode to ASCII based on current keyboard state
- * 
- * @param scancode Key scancode
- * @return ASCII character or 0 if no ASCII equivalent
- */
-static char kb_scancode_to_ascii(uint8_t scancode) {
-    char ascii = 0;
-    bool extended = (kb_state & KB_STATE_EXTENDED) != 0;
-    bool shift = (kb_state & KB_STATE_SHIFT) != 0;
-    bool caps = (kb_state & KB_STATE_CAPS_LOCK) != 0;
-    bool numlock = (kb_state & KB_STATE_NUM_LOCK) != 0;
-    
-    // Clear extended flag
-    kb_state &= ~KB_STATE_EXTENDED;
-    
-    // Handle regular keys
-    if (!extended && scancode < 128) {
-        if (shift) {
-            ascii = kb_us_shift_layout[scancode];
-        } else {
-            ascii = kb_us_layout[scancode];
-        }
-        
-        // Apply Caps Lock to letters
-        if (caps && ascii >= 'a' && ascii <= 'z') {
-            ascii = kb_us_shift_layout[scancode];
-        } else if (caps && ascii >= 'A' && ascii <= 'Z') {
-            ascii = kb_us_layout[scancode];
-        }
-    }
-    
-    // Handle extended keys
-    if (extended) {
-        // Numpad keys
-        if (numlock && scancode >= 0x47 && scancode <= 0x53) {
-            int index = scancode - 0x47;
-            if (index < 16) {
-                ascii = kb_numpad_layout[index];
-            }
-        }
-    }
-    
-    return ascii;
-}
-
-/**
- * @brief Process a keyboard scancode
- * 
- * @param scancode Scancode received from keyboard
- */
-static void kb_process_scancode(uint8_t scancode) {
-    // Handle extended key prefix
-    if (scancode == KB_EXTENDED_FLAG) {
-        kb_state |= KB_STATE_EXTENDED;
+    // Wait for ACK
+    if (kb_read_data() != KB_RESPONSE_ACK) {
         return;
     }
     
-    // Check if it's a key release (bit 7 set)
-    bool release = (scancode & 0x80) != 0;
-    if (release) {
-        scancode &= 0x7F;  // Clear release bit
+    // Send LED state
+    if (!kb_send_data(leds)) {
+        return;
+    }
+    
+    // Wait for ACK (ignore if not received)
+    kb_read_data();
+}
+
+/**
+ * @brief Handle a keyboard scancode
+ * 
+ * @param scancode Scancode to handle
+ */
+static void kb_handle_scancode(uint8_t scancode) {
+    // Check for extended key prefix (0xE0)
+    if (scancode == 0xE0) {
+        extended_key = true;
+        return;
+    }
+    
+    // Key release has bit 7 set
+    bool is_release = (scancode & 0x80) != 0;
+    uint8_t key = scancode & 0x7F;  // Key code without release bit
+    
+    // Track key states
+    if (extended_key) {
+        key |= 0x80;  // Set high bit for extended keys
+        extended_key = false;
+    }
+    
+    // Update key state
+    if (is_release) {
+        key_states[key] = false;
         
-        // Handle modifier key releases
-        switch (scancode) {
-            case KB_KEY_LEFT_SHIFT:
-            case KB_KEY_RIGHT_SHIFT:
-                kb_state &= ~KB_STATE_SHIFT;
-                break;
-                
-            case KB_KEY_CTRL:
-                kb_state &= ~KB_STATE_CTRL;
-                break;
-                
-            case KB_KEY_ALT:
-                kb_state &= ~KB_STATE_ALT;
-                break;
+        // Update modifier key states
+        if (key == 0x2A || key == 0x36) {  // Left or right shift
+            shift_pressed = false;
+        } else if (key == 0x1D || (key & 0x7F) == 0x1D) {  // Left or right ctrl
+            ctrl_pressed = false;
+        } else if (key == 0x38 || (key & 0x7F) == 0x38) {  // Left or right alt
+            alt_pressed = false;
         }
-        
-        // Remove from pressed keys
-        kb_remove_pressed_key(scancode);
     } else {
-        // Handle key press
-        // Handle modifier key presses
-        switch (scancode) {
-            case KB_KEY_LEFT_SHIFT:
-            case KB_KEY_RIGHT_SHIFT:
-                kb_state |= KB_STATE_SHIFT;
-                break;
-                
-            case KB_KEY_CTRL:
-                kb_state |= KB_STATE_CTRL;
-                break;
-                
-            case KB_KEY_ALT:
-                kb_state |= KB_STATE_ALT;
-                break;
-                
-            case KB_KEY_CAPS_LOCK:
-                kb_state ^= KB_STATE_CAPS_LOCK;
-                kb_update_leds();
-                break;
-                
-            case KB_KEY_NUM_LOCK:
-                kb_state ^= KB_STATE_NUM_LOCK;
-                kb_update_leds();
-                break;
-                
-            case KB_KEY_SCROLL_LOCK:
-                kb_state ^= KB_STATE_SCROLL_LOCK;
-                kb_update_leds();
-                break;
-                
-            default:
-                // Add to pressed keys
-                kb_add_pressed_key(scancode);
-                break;
+        key_states[key] = true;
+        
+        // Update modifier key states
+        if (key == 0x2A || key == 0x36) {  // Left or right shift
+            shift_pressed = true;
+        } else if (key == 0x1D || (key & 0x7F) == 0x1D) {  // Left or right ctrl
+            ctrl_pressed = true;
+        } else if (key == 0x38 || (key & 0x7F) == 0x38) {  // Left or right alt
+            alt_pressed = true;
         }
         
-        // Convert to ASCII and call callback
-        char ascii = kb_scancode_to_ascii(scancode);
-        if (kb_callback != NULL && ascii != 0) {
-            kb_callback(scancode, ascii);
+        // Check for toggle keys
+        if (key == 0x3A && !is_release) {  // Caps Lock
+            caps_lock = !caps_lock;
+            kb_update_leds();
+        } else if (key == 0x45 && !is_release) {  // Num Lock
+            num_lock = !num_lock;
+            kb_update_leds();
+        } else if (key == 0x46 && !is_release) {  // Scroll Lock
+            scroll_lock = !scroll_lock;
+            kb_update_leds();
         }
     }
 }
@@ -434,144 +348,240 @@ static void kb_process_scancode(uint8_t scancode) {
 /**
  * @brief Keyboard interrupt handler
  */
-static void kb_handler(void) {
-    // Read scancode from keyboard data port
-    uint8_t scancode = inb(PS2_DATA_PORT);
+static void kb_interrupt_handler(void) {
+    // Read scancode from keyboard
+    uint8_t scancode = inb(KB_DATA_PORT);
     
-    // Process the scancode
-    kb_process_scancode(scancode);
+    // Push to buffer
+    kb_buffer_push(scancode);
+    
+    // Handle the key
+    kb_handle_scancode(scancode);
     
     // Send EOI to PIC
-    pic_send_eoi(IRQ_KEYBOARD);
+    pic_send_eoi(KEYBOARD_IRQ);
 }
 
 /**
- * @brief Register a keyboard callback function
- * 
- * @param callback Function to call when a key is pressed
- */
-void kb_register_callback(kb_callback_t callback) {
-    kb_callback = callback;
-}
-
-/**
- * @brief Default keyboard callback that outputs to console
- * 
- * @param scancode Key scancode
- * @param ascii ASCII character
- */
-static void kb_default_callback(uint8_t scancode, char ascii) {
-    // Output the character to the VGA console
-    vga_putchar(ascii);
-}
-
-/**
- * @brief Get the current keyboard state
- * 
- * @return Keyboard state flags
- */
-uint8_t kb_get_state(void) {
-    return kb_state;
-}
-
-/**
- * @brief Get an array of currently pressed keys
- * 
- * @param keys Array to fill with scancodes
- * @param max_keys Maximum number of keys to return
- * @return Number of keys copied
- */
-uint8_t kb_get_pressed_keys(uint8_t* keys, uint8_t max_keys) {
-    uint8_t count = (kb_pressed_count < max_keys) ? kb_pressed_count : max_keys;
-    for (uint8_t i = 0; i < count; i++) {
-        keys[i] = kb_pressed_keys[i];
-    }
-    return count;
-}
-
-/**
- * @brief Check if a specific key is currently pressed
- * 
- * @param scancode Key scancode to check
- * @return true if key is pressed, false otherwise
- */
-bool kb_is_key_pressed(uint8_t scancode) {
-    for (int i = 0; i < kb_pressed_count; i++) {
-        if (kb_pressed_keys[i] == scancode) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * @brief Initialize the keyboard
+ * @brief Initialize the keyboard controller
  */
 void kb_init(void) {
-    // Reset the keyboard controller
-    ps2_send_command(PS2_CMD_TEST_CTRL);
-    if (!ps2_wait_output() || inb(PS2_DATA_PORT) != 0x55) {
-        kprintf("KEYBOARD: Controller self-test failed\n");
+    // Disable both ports during initialization
+    kb_send_command(KB_CMD_DISABLE_FIRST);
+    kb_send_command(KB_CMD_DISABLE_SECOND);
+    
+    // Flush the output buffer
+    while (inb(KB_STATUS_PORT) & KB_STATUS_OUTPUT_FULL) {
+        inb(KB_DATA_PORT);
+    }
+    
+    // Read current configuration
+    kb_send_command(KB_CMD_READ_CONFIG);
+    uint8_t config = kb_read_data();
+    
+    // Update configuration:
+    // - Enable first port interrupt (IRQ1)
+    // - Enable first port clock
+    // - Disable second port clock
+    // - Disable translation (we'll handle scancodes directly)
+    config |= KB_CONFIG_FIRST_INT | KB_CONFIG_FIRST_CLOCK;
+    config &= ~(KB_CONFIG_SECOND_CLOCK | KB_CONFIG_FIRST_TRANS);
+    
+    // Write updated configuration
+    kb_send_command(KB_CMD_WRITE_CONFIG);
+    kb_send_data(config);
+    
+    // Perform self-test
+    kb_send_command(KB_CMD_TEST_CONTROLLER);
+    if (kb_read_data() != 0x55) {
+        kprintf("Keyboard: Controller self-test failed\n");
         return;
     }
     
-    // Disable ports during initialization
-    ps2_send_command(PS2_CMD_DISABLE_P1);
-    ps2_send_command(PS2_CMD_DISABLE_P2);
-    
-    // Flush output buffer
-    while (inb(PS2_STATUS_PORT) & PS2_STATUS_OUTPUT) {
-        inb(PS2_DATA_PORT);
-    }
-    
-    // Set the controller configuration
-    ps2_send_command(PS2_CMD_READ_CONFIG);
-    if (!ps2_wait_output()) {
-        kprintf("KEYBOARD: Failed to read controller config\n");
+    // Test first port
+    kb_send_command(KB_CMD_TEST_FIRST);
+    if (kb_read_data() != 0x00) {
+        kprintf("Keyboard: First port test failed\n");
         return;
     }
     
-    uint8_t config = inb(PS2_DATA_PORT);
-    
-    // Disable translation, enable keyboard interrupts
-    config |= PS2_CONFIG_P1_INT;    // Enable keyboard interrupts
-    config &= ~PS2_CONFIG_P1_TRANS; // Disable translation
-    
-    ps2_send_command_data(PS2_CMD_WRITE_CONFIG, config);
-    
-    // Re-enable first port (keyboard)
-    ps2_send_command(PS2_CMD_ENABLE_P1);
+    // Enable first port
+    kb_send_command(KB_CMD_ENABLE_FIRST);
     
     // Reset the keyboard
-    if (!ps2_write_device(PS2_DEV_RESET)) {
-        kprintf("KEYBOARD: Reset failed\n");
+    kb_send_data(KB_CMD_RESET);
+    if (kb_read_data() != KB_RESPONSE_ACK) {
+        kprintf("Keyboard: Reset command failed (ACK not received)\n");
         return;
     }
     
-    // Wait for self-test completion
-    if (!ps2_wait_output() || inb(PS2_DATA_PORT) != 0xAA) {
-        kprintf("KEYBOARD: Self-test failed\n");
+    // Wait for reset to complete
+    uint8_t reset_response = kb_read_data();
+    if (reset_response != 0xAA) {
+        kprintf("Keyboard: Reset failed (0x%02X)\n", reset_response);
         return;
     }
     
-    // Set default parameters
-    ps2_write_device(PS2_DEV_SET_DEFAULTS);
+    // Enable keyboard scanning
+    kb_send_data(KB_CMD_ENABLE_SCANNING);
+    if (kb_read_data() != KB_RESPONSE_ACK) {
+        kprintf("Keyboard: Enable scanning failed\n");
+        return;
+    }
     
-    // Enable scanning
-    ps2_write_device(PS2_DEV_ENABLE_SCAN);
+    // Initialize key state
+    num_lock = false;
+    caps_lock = false;
+    scroll_lock = false;
+    extended_key = false;
+    shift_pressed = false;
+    alt_pressed = false;
+    ctrl_pressed = false;
     
-    // Set initial LED state
-    kb_state = KB_STATE_NUM_LOCK;  // Num Lock on by default
+    // Update LEDs
     kb_update_leds();
     
-    // Register the keyboard interrupt handler
-    register_interrupt_handler(IRQ_KEYBOARD + PIC1_OFFSET, kb_handler);
+    // Register interrupt handler
+    register_interrupt_handler(KEYBOARD_IRQ + 32, kb_interrupt_handler);
     
     // Unmask the keyboard IRQ
-    pic_unmask_irq(IRQ_KEYBOARD);
+    pic_unmask_irq(KEYBOARD_IRQ);
     
-    // Register default callback
-    kb_register_callback(kb_default_callback);
+    // Mark as initialized
+    kb_initialized = true;
+    kbd_ready = true;
     
-    kprintf("KEYBOARD: Initialized\n");
+    kprintf("Keyboard: Initialized\n");
+}
+
+/**
+ * @brief Get a character from the keyboard
+ * 
+ * @return Character code, or 0 if no character available
+ */
+char kb_get_char(void) {
+    if (!kb_initialized || kb_buffer_is_empty()) {
+        return 0;
+    }
+    
+    // Process scancodes until we get a key press (not release)
+    while (!kb_buffer_is_empty()) {
+        uint8_t scancode = kb_buffer_pop();
+        
+        // Skip extended key marker
+        if (scancode == 0xE0) {
+            continue;
+        }
+        
+        // Skip key releases
+        if (scancode & 0x80) {
+            continue;
+        }
+        
+        // Convert to character
+        if (scancode < 128) {
+            bool use_uppercase = (shift_pressed != caps_lock);
+            return use_uppercase ? kb_layout_upper[scancode] : kb_layout_lower[scancode];
+        }
+    }
+    
+    return 0;
+}
+
+/**
+ * @brief Get a scancode from the keyboard
+ * 
+ * @return Scancode, or 0 if no scancode available
+ */
+uint8_t kb_get_scancode(void) {
+    if (!kb_initialized || kb_buffer_is_empty()) {
+        return 0;
+    }
+    
+    return kb_buffer_pop();
+}
+
+/**
+ * @brief Check if a key is currently pressed
+ * 
+ * @param scancode Scancode to check
+ * @return true if key is pressed
+ */
+bool kb_is_key_pressed(uint8_t scancode) {
+    if (!kb_initialized) {
+        return false;
+    }
+    
+    return key_states[scancode & 0x7F];
+}
+
+/**
+ * @brief Get the name of a key from its scancode
+ * 
+ * @param scancode Scancode to get name for
+ * @return Key name
+ */
+const char* kb_get_key_name(uint8_t scancode) {
+    bool is_extended = (scancode & 0x80) != 0;
+    uint8_t key = scancode & 0x7F;
+    
+    if (key >= 128) {
+        return "UNKNOWN";
+    }
+    
+    return is_extended ? ext_key_names[key] : key_names[key];
+}
+
+/**
+ * @brief Check if Shift is pressed
+ * 
+ * @return true if Shift is pressed
+ */
+bool kb_is_shift_pressed(void) {
+    return shift_pressed;
+}
+
+/**
+ * @brief Check if Alt is pressed
+ * 
+ * @return true if Alt is pressed
+ */
+bool kb_is_alt_pressed(void) {
+    return alt_pressed;
+}
+
+/**
+ * @brief Check if Ctrl is pressed
+ * 
+ * @return true if Ctrl is pressed
+ */
+bool kb_is_ctrl_pressed(void) {
+    return ctrl_pressed;
+}
+
+/**
+ * @brief Check if Caps Lock is active
+ * 
+ * @return true if Caps Lock is active
+ */
+bool kb_is_caps_lock_active(void) {
+    return caps_lock;
+}
+
+/**
+ * @brief Check if Num Lock is active
+ * 
+ * @return true if Num Lock is active
+ */
+bool kb_is_num_lock_active(void) {
+    return num_lock;
+}
+
+/**
+ * @brief Check if Scroll Lock is active
+ * 
+ * @return true if Scroll Lock is active
+ */
+bool kb_is_scroll_lock_active(void) {
+    return scroll_lock;
 }
