@@ -21,6 +21,15 @@
 // Current output mode
 static int kprintf_mode = OUTPUT_MODE_BOTH;
 
+// Function pointer for character output
+typedef void (*putchar_func_t)(char);
+
+// Default putchar function
+static void default_putchar(char c);
+
+// Current putchar function
+static putchar_func_t current_putchar = default_putchar;
+
 // External function declarations
 extern void serial_write_byte(uint16_t port, uint8_t data);
 extern uint16_t debug_port;
@@ -50,11 +59,11 @@ void kprintf_set_mode(int mode) {
 }
 
 /**
- * @brief Output a single character to the appropriate devices
+ * @brief Default output function for putchar
  * 
  * @param c Character to output
  */
-static void putchar(char c) {
+static void default_putchar(char c) {
     if (kprintf_mode & OUTPUT_MODE_SERIAL && serial_initialized) {
         if (c == '\n') {
             serial_write_byte(debug_port, '\r');
@@ -65,6 +74,15 @@ static void putchar(char c) {
     if (kprintf_mode & OUTPUT_MODE_VGA) {
         vga_putchar(c);
     }
+}
+
+/**
+ * @brief Output a single character to the appropriate devices
+ * 
+ * @param c Character to output
+ */
+static inline void putchar(char c) {
+    current_putchar(c);
 }
 
 /**
@@ -596,7 +614,7 @@ int snprintf(char* buffer, size_t size, const char* fmt, ...) {
     
     // Save current output mode and setup buffer
     int old_mode = kprintf_mode;
-    void (*old_putchar)(char) = putchar;
+    putchar_func_t old_putchar = current_putchar;
     
     // Setup snprintf state
     snprintf_buffer = buffer;
@@ -604,7 +622,7 @@ int snprintf(char* buffer, size_t size, const char* fmt, ...) {
     snprintf_size = size;
     
     // Redirect output to our custom putchar
-    putchar = snprintf_putchar;
+    current_putchar = snprintf_putchar;
     
     // Process the format string with our args
     va_list args;
@@ -623,7 +641,7 @@ int snprintf(char* buffer, size_t size, const char* fmt, ...) {
     }
     
     // Restore original output mode
-    putchar = old_putchar;
+    current_putchar = old_putchar;
     kprintf_mode = old_mode;
     
     return result;
