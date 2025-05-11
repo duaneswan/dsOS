@@ -7,300 +7,284 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// IRQ lines (from pic.c)
-#define IRQ_TIMER         0           // Timer IRQ
-#define IRQ_KEYBOARD      1           // Keyboard IRQ
-#define IRQ_CASCADE       2           // Cascade IRQ (used internally by the PICs)
-#define IRQ_COM2          3           // COM2 IRQ
-#define IRQ_COM1          4           // COM1 IRQ
-#define IRQ_LPT2          5           // LPT2 IRQ
-#define IRQ_FLOPPY        6           // Floppy disk IRQ
-#define IRQ_LPT1          7           // LPT1 IRQ (spurious)
-#define IRQ_RTC           8           // Real-time clock IRQ
-#define IRQ_ACPI          9           // ACPI IRQ
-#define IRQ_AVAILABLE1    10          // Available IRQ
-#define IRQ_AVAILABLE2    11          // Available IRQ
-#define IRQ_PS2_MOUSE     12          // PS/2 mouse IRQ
-#define IRQ_FPU           13          // FPU IRQ
-#define IRQ_ATA_PRIMARY   14          // Primary ATA IRQ
-#define IRQ_ATA_SECONDARY 15          // Secondary ATA IRQ
+// PIT ports and frequencies
+#define PIT_CHANNEL0    0x40    // Channel 0 data port
+#define PIT_CHANNEL1    0x41    // Channel 1 data port
+#define PIT_CHANNEL2    0x42    // Channel 2 data port
+#define PIT_COMMAND     0x43    // Mode/command register
+#define PIT_BASE_FREQ   1193182 // Base frequency of the PIT (Hz)
 
-// PIC interrupt offsets (from pic.c)
-#define PIC1_OFFSET       0x20        // Master PIC base interrupt number
-#define PIC2_OFFSET       0x28        // Slave PIC base interrupt number
+// IRQ line for the PIT
+#define PIT_IRQ         0
 
-// PIT (8253/8254) ports
-#define PIT_CHANNEL0      0x40    // Channel 0 data port (read/write)
-#define PIT_CHANNEL1      0x41    // Channel 1 data port (read/write)
-#define PIT_CHANNEL2      0x42    // Channel 2 data port (read/write)
-#define PIT_COMMAND       0x43    // Mode/Command register (write only)
+// Timer state
+static uint32_t timer_frequency = 0;    // Current timer frequency
+static uint64_t timer_ticks = 0;        // Number of ticks since boot
+static uint64_t last_tick_ms = 0;       // Last timer tick in milliseconds
 
-// PIT operating modes
-#define PIT_MODE_INTERRUPT     0x00    // Mode 0: Interrupt on terminal count
-#define PIT_MODE_ONESHOT       0x02    // Mode 1: Hardware re-triggerable one-shot
-#define PIT_MODE_RATE          0x04    // Mode 2: Rate generator
-#define PIT_MODE_SQUARE        0x06    // Mode 3: Square wave generator
-#define PIT_MODE_SW_STROBE     0x08    // Mode 4: Software triggered strobe
-#define PIT_MODE_HW_STROBE     0x0A    // Mode 5: Hardware triggered strobe
+// Sleep timer callback
+typedef struct {
+    bool active;                // Whether this callback is active
+    uint64_t target_ticks;      // Target tick count to trigger
+    void (*callback)(void);     // Function to call when triggered
+} sleep_timer_t;
 
-// PIT command bits
-#define PIT_ACCESS_LATCH       0x00    // Latch count value command
-#define PIT_ACCESS_LOW         0x10    // Access low byte only
-#define PIT_ACCESS_HIGH        0x20    // Access high byte only
-#define PIT_ACCESS_BOTH        0x30    // Access both bytes
-
-// PIT channel selection
-#define PIT_CHANNEL0_SELECT    0x00    // Select channel 0
-#define PIT_CHANNEL1_SELECT    0x40    // Select channel 1
-#define PIT_CHANNEL2_SELECT    0x80    // Select channel 2
-#define PIT_READBACK_COMMAND   0xC0    // Read-back command
-
-// PIT oscillator frequency
-#define PIT_FREQUENCY       1193182    // 1.193182 MHz
-
-// Timer state variables
-static uint32_t timer_frequency = 0;
-static uint64_t timer_ticks = 0;
-static uint64_t timer_ms = 0;
-
-// Timer callback function type
-typedef void (*timer_callback_t)(void);
-
-// Timer callback
-static timer_callback_t timer_callback = NULL;
+// Sleep timer array
+#define MAX_SLEEP_TIMERS 16
+static sleep_timer_t sleep_timers[MAX_SLEEP_TIMERS];
+static bool sleep_enabled = false;
 
 /**
- * @brief Set the PIT channel frequency
+ * @brief Calculate the divisor for a given frequency
  * 
- * @param channel PIT channel (0-2)
  * @param frequency Desired frequency in Hz
- * @param mode PIT operating mode
+ * @return Divisor value
  */
-static void pit_set_frequency(uint8_t channel, uint32_t frequency, uint8_t mode) {
-    // Clamp frequency to valid range
-    if (frequency < 19) {
-        frequency = 19;  // Minimum frequency (~18.2 Hz)
-    } else if (frequency > PIT_FREQUENCY) {
-        frequency = PIT_FREQUENCY;  // Maximum frequency
-    }
+static uint16_t calculate_divisor(uint32_t frequency) {
+    return (uint16_t)(PIT_BASE_FREQ / frequency);
+}
+
+/**
+ * @brief Set the PIT frequency
+ * 
+ * @param frequency Desired frequency in Hz
+ */
+static void set_pit_frequency(uint32_t frequency) {
+    uint16_t divisor = calculate_divisor(frequency);
     
-    // Calculate divisor from frequency
-    uint16_t divisor = PIT_FREQUENCY / frequency;
-    
-    // Prepare command byte
-    uint8_t cmd = 0;
-    
-    switch (channel) {
-        case 0:
-            cmd = PIT_CHANNEL0_SELECT;
-            break;
-        case 1:
-            cmd = PIT_CHANNEL1_SELECT;
-            break;
-        case 2:
-            cmd = PIT_CHANNEL2_SELECT;
-            break;
-        default:
-            return;  // Invalid channel
-    }
-    
-    // Set access mode (both bytes) and operating mode
-    cmd |= PIT_ACCESS_BOTH | mode;
-    
-    // Send command
-    outb(PIT_COMMAND, cmd);
+    // Send command: Channel 0, lobyte/hibyte access, rate generator mode
+    outb(PIT_COMMAND, 0x36);
     
     // Set divisor (low byte, then high byte)
-    switch (channel) {
-        case 0:
-            outb(PIT_CHANNEL0, divisor & 0xFF);
-            outb(PIT_CHANNEL0, (divisor >> 8) & 0xFF);
-            break;
-        case 1:
-            outb(PIT_CHANNEL1, divisor & 0xFF);
-            outb(PIT_CHANNEL1, (divisor >> 8) & 0xFF);
-            break;
-        case 2:
-            outb(PIT_CHANNEL2, divisor & 0xFF);
-            outb(PIT_CHANNEL2, (divisor >> 8) & 0xFF);
-            break;
-    }
+    outb(PIT_CHANNEL0, divisor & 0xFF);
+    outb(PIT_CHANNEL0, (divisor >> 8) & 0xFF);
 }
 
 /**
- * @brief Get the current PIT channel count
- * 
- * @param channel PIT channel (0-2)
- * @return Current count value
- */
-static uint16_t pit_get_count(uint8_t channel) {
-    uint16_t count = 0;
-    uint8_t port = 0;
-    
-    // Select channel port
-    switch (channel) {
-        case 0:
-            port = PIT_CHANNEL0;
-            break;
-        case 1:
-            port = PIT_CHANNEL1;
-            break;
-        case 2:
-            port = PIT_CHANNEL2;
-            break;
-        default:
-            return 0;  // Invalid channel
-    }
-    
-    // Send latch command
-    outb(PIT_COMMAND, channel << 6);
-    
-    // Read count (low byte, then high byte)
-    count = inb(port);
-    count |= inb(port) << 8;
-    
-    return count;
-}
-
-/**
- * @brief Timer interrupt handler
+ * @brief PIT timer interrupt handler
  */
 static void timer_handler(void) {
-    // Increment tick count
     timer_ticks++;
+    last_tick_ms = timer_ticks * (1000 / timer_frequency);
     
-    // Update milliseconds
-    timer_ms = timer_ticks * (1000 / timer_frequency);
-    
-    // Call registered callback if any
-    if (timer_callback != NULL) {
-        timer_callback();
+    // Check for sleep timers
+    if (sleep_enabled) {
+        for (int i = 0; i < MAX_SLEEP_TIMERS; i++) {
+            if (sleep_timers[i].active && timer_ticks >= sleep_timers[i].target_ticks) {
+                sleep_timers[i].active = false;
+                if (sleep_timers[i].callback) {
+                    sleep_timers[i].callback();
+                }
+            }
+        }
     }
     
-    // Send EOI to PIC
-    pic_send_eoi(IRQ_TIMER);
+    // Send EOI to PIC (acknowledge interrupt)
+    pic_send_eoi(PIT_IRQ);
 }
 
 /**
- * @brief Get current system uptime in ticks
+ * @brief Initialize the PIT timer
  * 
- * @return Number of timer ticks since system start
+ * @param frequency Desired frequency in Hz
+ */
+void timer_init(uint32_t frequency) {
+    // Save frequency
+    timer_frequency = frequency;
+    timer_ticks = 0;
+    last_tick_ms = 0;
+    
+    // Set PIT frequency
+    set_pit_frequency(frequency);
+    
+    // Register interrupt handler
+    register_interrupt_handler(PIT_IRQ + 32, timer_handler);
+    
+    // Unmask IRQ0 (enable timer interrupts)
+    pic_unmask_irq(PIT_IRQ);
+    
+    kprintf("Timer: Initialized at %u Hz\n", frequency);
+}
+
+/**
+ * @brief Get the number of timer ticks since boot
+ * 
+ * @return Number of timer ticks
  */
 uint64_t timer_get_ticks(void) {
     return timer_ticks;
 }
 
 /**
- * @brief Get current system uptime in milliseconds
+ * @brief Get the number of milliseconds since boot
  * 
- * @return Number of milliseconds since system start
+ * @return Number of milliseconds
  */
 uint64_t timer_get_ms(void) {
-    return timer_ms;
+    return last_tick_ms;
 }
 
 /**
- * @brief Wait for the specified number of ticks
+ * @brief Convert ticks to milliseconds
  * 
- * @param ticks Number of ticks to wait
+ * @param ticks Number of ticks
+ * @return Equivalent number of milliseconds
  */
-void timer_wait_ticks(uint64_t ticks) {
-    uint64_t target = timer_ticks + ticks;
-    while (timer_ticks < target) {
-        __asm__ volatile("hlt"); // Pause the CPU until next interrupt
-    }
+uint64_t timer_ticks_to_ms(uint64_t ticks) {
+    return ticks * (1000 / timer_frequency);
 }
 
 /**
- * @brief Wait for the specified number of milliseconds
+ * @brief Convert milliseconds to ticks
+ * 
+ * @param ms Number of milliseconds
+ * @return Equivalent number of ticks
+ */
+uint64_t timer_ms_to_ticks(uint64_t ms) {
+    return ms * timer_frequency / 1000;
+}
+
+/**
+ * @brief Wait for a specified number of milliseconds
+ * 
+ * This function blocks until the specified time has passed
  * 
  * @param ms Number of milliseconds to wait
  */
 void timer_wait_ms(uint32_t ms) {
-    uint64_t ticks = (ms * timer_frequency) / 1000;
-    if (ticks == 0) ticks = 1;  // Ensure at least one tick
-    timer_wait_ticks(ticks);
-}
-
-/**
- * @brief Register a callback function to be called on each timer tick
- * 
- * @param callback Callback function pointer
- */
-void timer_register_callback(timer_callback_t callback) {
-    timer_callback = callback;
-}
-
-/**
- * @brief Initialize the PIT timer
- * 
- * @param frequency Desired timer frequency in Hz
- */
-void timer_init(uint32_t frequency) {
-    // Validate and save frequency
-    if (frequency < 19) {
-        frequency = 19;  // Minimum frequency (~18.2 Hz)
-    } else if (frequency > 1000) {
-        frequency = 1000;  // Maximum practical frequency
+    uint64_t target_ticks = timer_ticks + timer_ms_to_ticks(ms);
+    while (timer_ticks < target_ticks) {
+        // Wait for the timer interrupt to increment timer_ticks
+        asm volatile("pause");
     }
-    
-    timer_frequency = frequency;
-    
-    // Configure PIT channel 0 for rate generator mode
-    pit_set_frequency(0, frequency, PIT_MODE_SQUARE);
-    
-    // Register the timer handler
-    register_interrupt_handler(IRQ_TIMER + PIC1_OFFSET, timer_handler);
-    
-    // Enable timer interrupt
-    pic_unmask_irq(IRQ_TIMER);
-    
-    kprintf("TIMER: Initialized at %u Hz\n", frequency);
 }
 
 /**
- * @brief Initialize the system sleep timer (channel 1)
+ * @brief Initialize the sleep timer system
  */
 void sleep_timer_init(void) {
-    // Initialize PIT channel 1 for oneshot mode (used for delays)
-    pit_set_frequency(1, 100, PIT_MODE_ONESHOT);
+    // Initialize all sleep timers to inactive
+    for (int i = 0; i < MAX_SLEEP_TIMERS; i++) {
+        sleep_timers[i].active = false;
+        sleep_timers[i].callback = NULL;
+        sleep_timers[i].target_ticks = 0;
+    }
+    
+    sleep_enabled = true;
+    kprintf("Timer: Sleep timer system initialized\n");
 }
 
 /**
- * @brief Configure the PC speaker (channel 2)
+ * @brief Register a sleep timer callback
  * 
- * @param frequency Frequency in Hz (0 to turn off)
+ * @param ms Number of milliseconds to wait before callback
+ * @param callback Function to call when timer expires
+ * @return Timer ID (or -1 if no free timers)
  */
-void pc_speaker_set_frequency(uint32_t frequency) {
-    if (frequency == 0) {
-        // Turn off the PC speaker
-        uint8_t tmp = inb(0x61) & 0xFC;
-        outb(0x61, tmp);
-    } else {
-        // Set frequency
-        pit_set_frequency(2, frequency, PIT_MODE_SQUARE);
-        
-        // Turn on the PC speaker
-        uint8_t tmp = inb(0x61);
-        if (tmp != (tmp | 3)) {
-            outb(0x61, tmp | 3);
+int sleep_timer_register(uint32_t ms, void (*callback)(void)) {
+    if (!sleep_enabled) {
+        return -1;
+    }
+    
+    // Find a free timer slot
+    for (int i = 0; i < MAX_SLEEP_TIMERS; i++) {
+        if (!sleep_timers[i].active) {
+            sleep_timers[i].active = true;
+            sleep_timers[i].target_ticks = timer_ticks + timer_ms_to_ticks(ms);
+            sleep_timers[i].callback = callback;
+            return i;
         }
     }
+    
+    return -1;  // No free timer slots
 }
 
 /**
- * @brief Play a beep sound for a specified duration
+ * @brief Cancel a registered sleep timer
  * 
- * @param frequency Frequency in Hz
- * @param ms Duration in milliseconds
+ * @param timer_id Timer ID returned from sleep_timer_register
+ * @return true if timer was canceled, false if invalid ID
  */
-void pc_speaker_beep(uint32_t frequency, uint32_t ms) {
-    // Set the frequency
-    pc_speaker_set_frequency(frequency);
+bool sleep_timer_cancel(int timer_id) {
+    if (timer_id < 0 || timer_id >= MAX_SLEEP_TIMERS) {
+        return false;
+    }
     
-    // Wait for the specified duration
-    timer_wait_ms(ms);
+    sleep_timers[timer_id].active = false;
+    return true;
+}
+
+/**
+ * @brief Get the current PIT frequency
+ * 
+ * @return Current frequency in Hz
+ */
+uint32_t timer_get_frequency(void) {
+    return timer_frequency;
+}
+
+/**
+ * @brief Change the PIT frequency
+ * 
+ * @param frequency New frequency in Hz
+ */
+void timer_set_frequency(uint32_t frequency) {
+    if (frequency == timer_frequency) {
+        return;  // No change needed
+    }
     
-    // Turn off the speaker
-    pc_speaker_set_frequency(0);
+    // Disable interrupts temporarily
+    bool interrupts_enabled = (get_eflags() & (1 << 9)) != 0;
+    if (interrupts_enabled) {
+        disable_interrupts();
+    }
+    
+    // Update frequency and reset state
+    timer_frequency = frequency;
+    
+    // Set new PIT frequency
+    set_pit_frequency(frequency);
+    
+    // Restore interrupts if they were enabled
+    if (interrupts_enabled) {
+        enable_interrupts();
+    }
+    
+    kprintf("Timer: Frequency changed to %u Hz\n", frequency);
+}
+
+/**
+ * @brief Get the EFLAGS register value
+ * 
+ * @return EFLAGS register value
+ */
+uint64_t get_eflags(void) {
+    uint64_t eflags;
+    asm volatile("pushfq; popq %0" : "=r"(eflags));
+    return eflags;
+}
+
+/**
+ * @brief Get the current time in a human-readable format since epoch
+ * 
+ * Note: This is a placeholder. A real implementation would interface with CMOS/RTC
+ * 
+ * @param year Pointer to store year (or NULL)
+ * @param month Pointer to store month (or NULL)
+ * @param day Pointer to store day (or NULL)
+ * @param hour Pointer to store hour (or NULL)
+ * @param minute Pointer to store minute (or NULL)
+ * @param second Pointer to store second (or NULL)
+ */
+void timer_get_datetime(uint16_t* year, uint8_t* month, uint8_t* day,
+                       uint8_t* hour, uint8_t* minute, uint8_t* second) {
+    // Placeholder values - these should come from RTC
+    if (year) *year = 2025;
+    if (month) *month = 5;
+    if (day) *day = 11;
+    if (hour) *hour = 3;
+    if (minute) *minute = 0;
+    if (second) *second = 0;
+    
+    // TODO: Implement real date/time from RTC
 }
