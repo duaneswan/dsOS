@@ -23,10 +23,21 @@ void hos_init(void);
 void sched_init(void);
 
 // Global kernel status flags
-bool init_done = false;  // Kernel initialization complete
-bool fb_ready = false;   // Framebuffer initialized and ready
-bool kbd_ready = false;  // Keyboard initialized and ready
-bool recovery_mode = false; // Recovery mode flag
+bool init_done = false;    // Kernel initialization complete
+bool fb_ready = false;     // Framebuffer initialized and ready
+bool kbd_ready = false;    // Keyboard initialized and ready
+bool recovery_mode = false;  // Recovery mode flag
+
+// Terminal state
+uint32_t terminal_row = 0;
+uint32_t terminal_column = 0;
+
+// Framebuffer state
+void* framebuffer_base = NULL;
+uint32_t framebuffer_width = 0;
+uint32_t framebuffer_height = 0;
+uint32_t framebuffer_pitch = 0;
+uint32_t framebuffer_bpp = 0;
 
 // Early VGA console support for debugging
 #define VGA_WIDTH 80
