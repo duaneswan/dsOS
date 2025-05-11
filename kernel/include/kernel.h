@@ -1,60 +1,61 @@
 /**
  * @file kernel.h
- * @brief Main kernel header with core definitions and functions
+ * @brief Main kernel header file
  */
 
 #ifndef _KERNEL_H
 #define _KERNEL_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdbool.h>
 
 /**
- * @brief Define ssize_t as it's not in standard headers
+ * @brief POSIX-compatible type definitions
  */
-typedef long ssize_t;
+typedef int64_t ssize_t;
+typedef uint32_t mode_t;
+typedef uint32_t dev_t;
+typedef uint32_t ino_t;
+typedef uint16_t uid_t;
+typedef uint16_t gid_t;
 
 /**
- * @brief Kernel version information
+ * @brief OS version information
  */
-#define KERNEL_NAME     "dKernel"
-#define KERNEL_VERSION  "0.1.0"
-#define KERNEL_DATE     __DATE__
-#define KERNEL_TIME     __TIME__
-#define KERNEL_YEAR     "2025"
+#define OS_NAME     "dsOS"
+#define OS_VERSION  "0.1"
+#define OS_FULLNAME OS_NAME " v" OS_VERSION
 
 /**
- * @brief Panic types
+ * @brief Architecture definitions
  */
-#define PANIC_NORMAL         0   // Standard kernel panic
-#define PANIC_HOS_BREACH     1   // Hidden OS protection breach
-#define PANIC_HARDWARE_FAULT 2   // Hardware fault detection
+#define ARCH_X86_64
 
 /**
- * @brief VGA constants
+ * @brief Kernel symbol visibility
  */
-enum vga_color {
-    VGA_COLOR_BLACK = 0,
-    VGA_COLOR_BLUE = 1,
-    VGA_COLOR_GREEN = 2,
-    VGA_COLOR_CYAN = 3,
-    VGA_COLOR_RED = 4,
-    VGA_COLOR_MAGENTA = 5,
-    VGA_COLOR_BROWN = 6,
-    VGA_COLOR_LIGHT_GREY = 7,
-    VGA_COLOR_DARK_GREY = 8,
-    VGA_COLOR_LIGHT_BLUE = 9,
-    VGA_COLOR_LIGHT_GREEN = 10,
-    VGA_COLOR_LIGHT_CYAN = 11,
-    VGA_COLOR_LIGHT_RED = 12,
-    VGA_COLOR_LIGHT_MAGENTA = 13,
-    VGA_COLOR_LIGHT_BROWN = 14,
-    VGA_COLOR_WHITE = 15
-};
+#define KERNEL_API
 
 /**
- * @brief Critical CPU operations
+ * @brief Useful macros
+ */
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#define ALIGN_UP(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
+#define ALIGN_DOWN(x, align) ((x) & ~((align) - 1))
+#define IS_ALIGNED(x, align) (((x) & ((align) - 1)) == 0)
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+#define UNUSED(x) ((void)(x))
+#define PACKED __attribute__((packed))
+#define NORETURN __attribute__((noreturn))
+#define WEAK __attribute__((weak))
+#define ALIGN(x) __attribute__((aligned(x)))
+#define SECTION(x) __attribute__((section(x)))
+#define ALWAYS_INLINE __attribute__((always_inline))
+#define KERNEL_STACK_SIZE 16384
+
+/**
+ * @brief Assembly helpers
  */
 static inline void cli(void) {
     __asm__ volatile("cli");
@@ -68,59 +69,90 @@ static inline void hlt(void) {
     __asm__ volatile("hlt");
 }
 
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+static inline uint8_t inb(uint16_t port) {
+    uint8_t value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "d"(port));
+    return value;
 }
 
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
+static inline void outb(uint16_t port, uint8_t value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "d"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t value;
+    __asm__ volatile("inw %1, %0" : "=a"(value) : "d"(port));
+    return value;
+}
+
+static inline void outw(uint16_t port, uint16_t value) {
+    __asm__ volatile("outw %0, %1" : : "a"(value), "d"(port));
+}
+
+static inline uint32_t inl(uint16_t port) {
+    uint32_t value;
+    __asm__ volatile("inl %1, %0" : "=a"(value) : "d"(port));
+    return value;
+}
+
+static inline void outl(uint16_t port, uint32_t value) {
+    __asm__ volatile("outl %0, %1" : : "a"(value), "d"(port));
 }
 
 static inline void io_wait(void) {
+    // Port 0x80 is used for 'dummy' I/O operations
     outb(0x80, 0);
 }
 
-static inline void lidt(void* base, uint16_t size) {
-    struct {
-        uint16_t length;
-        uint64_t base;
-    } __attribute__((packed)) IDTR;
-
-    IDTR.length = size - 1;
-    IDTR.base = (uint64_t)base;
-    __asm__ volatile("lidt (%0)" : : "r"(&IDTR));
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t eax, edx;
+    __asm__ volatile("rdmsr" : "=a"(eax), "=d"(edx) : "c"(msr));
+    return ((uint64_t)edx << 32) | eax;
 }
 
-static inline void lgdt(void* base, uint16_t size) {
-    struct {
-        uint16_t length;
-        uint64_t base;
-    } __attribute__((packed)) GDTR;
+static inline void wrmsr(uint32_t msr, uint64_t value) {
+    uint32_t eax = value & 0xFFFFFFFF;
+    uint32_t edx = value >> 32;
+    __asm__ volatile("wrmsr" : : "a"(eax), "d"(edx), "c"(msr));
+}
 
-    GDTR.length = size - 1;
-    GDTR.base = (uint64_t)base;
-    __asm__ volatile("lgdt (%0)" : : "r"(&GDTR));
+static inline void invlpg(void* addr) {
+    __asm__ volatile("invlpg (%0)" : : "r"(addr) : "memory");
+}
+
+static inline void invalidate_tlb_entry(uintptr_t addr) {
+    __asm__ volatile("invlpg (%0)" : : "r"(addr) : "memory");
+}
+
+static inline void wbinvd(void) {
+    __asm__ volatile("wbinvd");
 }
 
 /**
- * @brief Debug and panic functions
+ * @brief Panic-related definitions
  */
-void panic(int type, const char* msg, const char* file, int line);
-void hos_breach(const char* reason, uintptr_t addr);
-void dump_memory(void* addr, size_t size);
+#define PANIC_NORMAL    0
+#define PANIC_CRITICAL  1
+#define PANIC_HOS_BREACH 2
+
+void panic(int type, const char* message, const char* file, int line);
+void kassert_func(bool condition, const char* message, const char* file, int line);
+void hos_breach(int breach_type, uintptr_t address, uint64_t expected, uint64_t actual);
+void halt(void) NORETURN;
+
+#define kassert(cond) kassert_func((cond), #cond, __FILE__, __LINE__)
 
 /**
- * @brief To be used for assertions in kernel code
+ * @brief Memory manager functions (declared in memory.h)
  */
-#define kassert(expr) \
-    if (!(expr)) { \
-        panic(PANIC_NORMAL, "Assertion failed: " #expr, __FILE__, __LINE__); \
-    }
+void* kmalloc(size_t size);
+void* kzalloc(size_t size);
+void* kmalloc_aligned(size_t size, size_t align);
+void kfree(void* ptr);
+void* krealloc(void* ptr, size_t size);
 
 /**
- * @brief String and memory functions
+ * @brief String functions (declared in string.h)
  */
 void* memcpy(void* dest, const void* src, size_t n);
 void* memmove(void* dest, const void* src, size_t n);
@@ -129,77 +161,122 @@ int memcmp(const void* s1, const void* s2, size_t n);
 size_t strlen(const char* s);
 char* strcpy(char* dest, const char* src);
 char* strncpy(char* dest, const char* src, size_t n);
-int strcmp(const char* s1, const char* s2);
-int strncmp(const char* s1, const char* s2, size_t n);
 char* strcat(char* dest, const char* src);
 char* strncat(char* dest, const char* src, size_t n);
+int strcmp(const char* s1, const char* s2);
+int strncmp(const char* s1, const char* s2, size_t n);
 char* strchr(const char* s, int c);
 char* strrchr(const char* s, int c);
 char* strstr(const char* haystack, const char* needle);
+char* strupr(char* s);
+char* strlwr(char* s);
+char* strdup(const char* s);
 
 /**
- * @brief Printing and formatting functions
+ * @brief Console/print functions (declared in printf.h)
  */
 int kprintf(const char* fmt, ...);
-int snprintf(char* buffer, size_t size, const char* fmt, ...);
 void kprintf_set_mode(int mode);
+int snprintf(char* buffer, size_t size, const char* fmt, ...);
 
 /**
- * @brief System initialization functions
+ * @brief VGA console functions (declared in vga.h)
+ */
+void vga_init(void);
+void vga_clear(void);
+void vga_putchar(char c);
+void vga_print(const char* str);
+void vga_set_color(uint8_t fg, uint8_t bg);
+uint8_t vga_make_color(uint8_t fg, uint8_t bg);
+void vga_enable_cursor(bool enable);
+void vga_set_cursor_pos(int x, int y);
+
+/**
+ * @brief Serial port functions (declared in serial.h)
+ */
+void serial_init(uint16_t port);
+void serial_write_byte(uint16_t port, uint8_t byte);
+uint8_t serial_read_byte(uint16_t port);
+void serial_write_str(uint16_t port, const char* str);
+bool serial_is_transmit_empty(uint16_t port);
+bool serial_has_received(uint16_t port);
+
+/**
+ * @brief CPU/architecture specific functions (declared in cpu.h)
  */
 void gdt_init(void);
 void idt_init(void);
 void pic_init(void);
 void timer_init(uint32_t frequency);
 void keyboard_init(void);
-void serial_init(void);
-void vga_init(void);
 
 /**
- * @brief Memory management initialization
+ * @brief Interrupt handlers (declared in interrupt.h)
  */
-void mm_init(uintptr_t mem_upper);
-void heap_init(uintptr_t start, size_t size);
+typedef void (*interrupt_handler_t)(void);
+void register_interrupt_handler(uint8_t interrupt, interrupt_handler_t handler);
 
 /**
- * @brief Hidden OS protection functions
+ * @brief Hidden OS (hOS) protection (declared in hos.h)
  */
-void hos_init(uintptr_t partition_start, size_t partition_size);
-bool hos_verify_block(uint64_t block_num, const void* data, size_t size);
+void hos_init(void);
+void hos_monitor_region(uintptr_t start, size_t size, bool exec, bool write);
+void hos_hash_region(uintptr_t start, size_t size);
+void hos_verify_region(uintptr_t start, size_t size);
 
 /**
- * @brief Boot logo functions
+ * @brief Filesystem (swanFS) functions (declared in swanfs.h)
  */
-void load_boot_logo(void);
-void animate_boot_logo(bool fade_in);
-
-/**
- * @brief SwanFS file system functions
- */
-int sw_mount(const char* device, const char* mountpoint);
-int sw_umount(const char* mountpoint);
-int sw_open(const char* pathname, int flags, int mode);
-int sw_close(int fd);
+int sw_open(const char* path, int flags, int mode);
 ssize_t sw_read(int fd, void* buf, size_t count);
 ssize_t sw_write(int fd, const void* buf, size_t count);
-int sw_mkdir(const char* pathname, uint32_t mode);
-int sw_stat(const char* pathname, void* buf);
-int sw_unlink(const char* pathname);
+int sw_close(int fd);
+int sw_mkdir(const char* path, mode_t mode);
+int sw_unlink(const char* path);
+int sw_mount(const char* source, const char* target);
+int sw_unmount(const char* target);
 
 /**
- * @brief Boot menu functions
+ * @brief Graphical functions (declared in gfx.h)
  */
-int boot_menu_show(void);
-void boot_menu_normal(void);
-void boot_menu_terminal(void);
-void boot_menu_recovery(void);
-void boot_menu_reboot(void);
+void gfx_init(void);
+void gfx_set_resolution(int width, int height, int bpp);
+void* gfx_get_framebuffer(void);
+void gfx_swap_buffers(void);
+void gfx_draw_logo(void);
 
 /**
- * @brief Progress indicator
+ * @brief Boot image functions
  */
-void progress_init(const char* message);
-void progress_update(int percent);
-void progress_done(void);
+void boot_logo_init(void);
+void boot_logo_show(void);
+void boot_logo_fade_in(uint32_t duration_ms);
+void boot_logo_fade_out(uint32_t duration_ms);
+
+/**
+ * @brief User management functions
+ */
+int user_create(const char* username, const char* password, const char* fullname);
+int user_authenticate(const char* username, const char* password);
+int user_set_password(const char* username, const char* old_password, const char* new_password);
+int user_delete(const char* username);
+int user_get_home(const char* username, char* home_path, size_t size);
+
+/**
+ * @brief Session management functions
+ */
+void session_init(void);
+int session_start(const char* username);
+int session_end(void);
+
+/**
+ * @brief System state
+ */
+KERNEL_API extern bool init_done;
+KERNEL_API extern bool fb_ready;
+KERNEL_API extern bool kbd_ready;
+KERNEL_API extern bool graphics_mode;
+KERNEL_API extern uintptr_t kernel_end;
+KERNEL_API extern uint16_t debug_port;
 
 #endif /* _KERNEL_H */
